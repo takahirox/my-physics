@@ -42,11 +42,10 @@ pub extern "C" fn physics_step(steps: u32) {
             let time = w.time_s;
             for n in 1..w.vehicles.len() {
                 let phase = n as f64 * 0.7;
-                let steering = (time * 0.22 + phase).sin() * 0.18;
                 let _ = w.set_input_unrecorded(
                     n,
                     DriverInput {
-                        steering,
+                        steering: 0.0,
                         throttle: 0.48 + 0.08 * (phase + time * 0.1).sin(),
                         ..DriverInput::default()
                     },
@@ -59,6 +58,10 @@ pub extern "C" fn physics_step(steps: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_vehicle_count() -> u32 {
     with_world(|w| w.vehicles.len() as u32)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_half_width() -> f64 {
+    crate::world::DEMO_TRACK_HALF_WIDTH_M
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_time() -> f64 {

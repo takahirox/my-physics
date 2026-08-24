@@ -19,10 +19,10 @@ My Physics is a deterministic, headless-first vehicle and motorsport physics eng
 - Spatial road temperature, rubber, contamination and water state with tire interaction
 - Oriented box, capsule and convex narrow phases for vehicles, curbs and static environments
 - Dynamics-affecting deformation, wheel/suspension/aero damage and independent detached bodies
-- Ten-vehicle demo with smoothly changing physics LOD
+- Ten-vehicle procedural race-straight demo with synchronized physical barriers and smoothly changing physics LOD
 - Complete versioned/checksummed snapshot archives, persistent timed input history, restore and deterministic re-simulation
 - Detailed telemetry, expanded headless CSV, continuous Audio/FFB frames and discrete physical events
-- Raw WebAssembly API and rendering-independent WebGL2 3D chase-camera demo
+- Raw WebAssembly API and rendering-independent WebGL2 3D chase-camera demo with curbs, catch fencing, grids, gantries and grandstands
 
 ## Run it
 

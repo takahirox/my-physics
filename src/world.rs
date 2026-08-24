@@ -5,6 +5,11 @@ use crate::road::DynamicRoad;
 use crate::tire::{MagicFormulaTire, TireInput};
 use crate::vehicle::{Vehicle, VehicleDefinition, evaluate_tire};
 
+/// Inner face of the barriers on the procedural v0.1 demonstration circuit.
+pub const DEMO_TRACK_HALF_WIDTH_M: f64 = 5.6;
+const DEMO_TRACK_COLLIDER_CENTER_Z_M: f64 = -5_000.0;
+const DEMO_TRACK_COLLIDER_HALF_LENGTH_M: f64 = 5_100.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fidelity {
     Low,
@@ -130,25 +135,20 @@ impl PhysicsWorld {
             v.target_fidelity = if n == 0 { 1.0 } else { 0.6 };
             w.vehicles.push(v);
         }
-        w.static_colliders.push(StaticCollider {
-            position_m: Vec3::new(-7.0, 1.0, -25.0),
-            orientation: Quat::IDENTITY,
-            shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 1.0, 60.0) },
-            restitution: 0.15,
-            friction: 0.8,
-        });
-        w.static_colliders.push(StaticCollider {
-            position_m: Vec3::new(7.0, 1.0, -25.0),
-            orientation: Quat::IDENTITY,
-            shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 1.0, 60.0) },
-            restitution: 0.15,
-            friction: 0.8,
-        });
-        for x in [-6.55, 6.55] {
+        for x in [-(DEMO_TRACK_HALF_WIDTH_M + 0.3), DEMO_TRACK_HALF_WIDTH_M + 0.3] {
             w.static_colliders.push(StaticCollider {
-                position_m: Vec3::new(x, 0.09, -25.0),
+                position_m: Vec3::new(x, 1.0, DEMO_TRACK_COLLIDER_CENTER_Z_M),
                 orientation: Quat::IDENTITY,
-                shape: CollisionShape::Box { half_extents_m: Vec3::new(0.35, 0.09, 60.0) },
+                shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 1.0, DEMO_TRACK_COLLIDER_HALF_LENGTH_M) },
+                restitution: 0.15,
+                friction: 0.8,
+            });
+        }
+        for x in [-(DEMO_TRACK_HALF_WIDTH_M - 0.3), DEMO_TRACK_HALF_WIDTH_M - 0.3] {
+            w.static_colliders.push(StaticCollider {
+                position_m: Vec3::new(x, 0.09, DEMO_TRACK_COLLIDER_CENTER_Z_M),
+                orientation: Quat::IDENTITY,
+                shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 0.09, DEMO_TRACK_COLLIDER_HALF_LENGTH_M) },
                 restitution: 0.05,
                 friction: 0.95,
             });

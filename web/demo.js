@@ -272,6 +272,91 @@ class Renderer3D {
     }
   }
 
+  grandstand(trackHalfWidth, centerZ, side) {
+    const baseX = side * (trackHalfWidth + 4.3);
+    for (let row = 0; row < 5; row += 1) {
+      const x = baseX + side * row * 0.9;
+      this.box([x, 0.4 + row * 0.48, centerZ], [1.0, 0.75, 30], rgb(row % 2 ? '#303a36' : '#46534d'));
+      for (let seat = -13; seat <= 13; seat += 2) {
+        const seatColor = Math.abs(seat + row) % 4 ? '#c5d0c8' : '#b9ef42';
+        this.box([x - side * 0.5, 0.88 + row * 0.48, centerZ + seat], [0.18, 0.16, 1.1], rgb(seatColor));
+      }
+    }
+    this.box([baseX + side * 2.1, 3.4, centerZ], [5.7, 0.22, 32], rgb('#c4cbc4'));
+    this.box([baseX + side * 4.8, 1.7, centerZ], [0.18, 3.4, 32], rgb('#6f7974'));
+  }
+
+  raceCourse(playerZ, trackHalfWidth) {
+    const trackCenter = Math.floor(playerZ / 400) * 400;
+    const roadWidth = trackHalfWidth * 2;
+    this.box([0, -0.2, trackCenter], [220, 0.3, 800], rgb('#18351d'));
+    this.box([0, -0.015, trackCenter], [roadWidth, 0.08, 800], rgb('#202522'));
+    this.box([-trackHalfWidth + 0.12, 0.035, trackCenter], [0.16, 0.025, 800], rgb('#f0f2ec'));
+    this.box([trackHalfWidth - 0.12, 0.035, trackCenter], [0.16, 0.025, 800], rgb('#f0f2ec'));
+
+    for (const side of [-1, 1]) {
+      const barrierX = side * (trackHalfWidth + 0.3);
+      this.box([barrierX, 0.34, trackCenter], [0.6, 0.68, 800], rgb('#bcc3be'));
+      this.box([barrierX - side * 0.305, 0.24, trackCenter], [0.035, 0.26, 800], rgb('#59615d'));
+    }
+
+    for (let detail = Math.floor((playerZ - 150) / 2) * 2; detail < playerZ + 65; detail += 2) {
+      const lineOffset = Math.sin(detail * 0.031) * 0.22;
+      this.box([-0.92 + lineOffset, 0.031, detail], [0.065, 0.014, 1.25], rgb('#111512'));
+      this.box([0.92 + lineOffset, 0.031, detail], [0.065, 0.014, 1.25], rgb('#111512'));
+    }
+    for (let seam = Math.floor((playerZ - 150) / 12) * 12; seam < playerZ + 65; seam += 12) {
+      this.box([0, 0.027, seam], [roadWidth - 0.5, 0.009, 0.045], rgb('#111512'));
+    }
+    for (let curb = Math.floor((playerZ - 170) / 4) * 4; curb < playerZ + 80; curb += 4) {
+      const curbColor = Math.abs(Math.floor(curb / 4)) % 2 ? rgb('#f4f2e9') : rgb('#d9342b');
+      this.box([-trackHalfWidth + 0.3, 0.065, curb], [0.6, 0.10, 3.9], curbColor);
+      this.box([trackHalfWidth - 0.3, 0.065, curb], [0.6, 0.10, 3.9], curbColor);
+      this.box([-trackHalfWidth + 0.78, 0.055, curb], [0.11, 0.055, 0.35], rgb('#f5f2c9'));
+      this.box([trackHalfWidth - 0.78, 0.055, curb], [0.11, 0.055, 0.35], rgb('#f5f2c9'));
+    }
+    for (let fence = Math.floor((playerZ - 170) / 8) * 8; fence < playerZ + 90; fence += 8) {
+      for (const side of [-1, 1]) {
+        const x = side * (trackHalfWidth + 0.68);
+        this.box([x, 1.45, fence], [0.09, 2.9, 0.09], rgb('#77817c'));
+        this.box([x, 2.3, fence + 2.0], [0.055, 0.055, 4.0], rgb('#8c9691'));
+      }
+    }
+    for (let board = Math.floor((playerZ - 180) / 100) * 100; board < playerZ + 100; board += 100) {
+      for (const side of [-1, 1]) {
+        const x = side * (trackHalfWidth + 1.25);
+        this.box([x, 1.0, board], [0.10, 2.0, 0.10], rgb('#707873'));
+        this.box([x, 2.05, board], [1.05, 0.75, 0.16], rgb('#f0f1eb'));
+        this.box([x - side * 0.02, 2.05, board - 0.09], [0.55, 0.16, 0.04], rgb('#d9342b'));
+      }
+    }
+
+    for (let line = Math.floor((playerZ - 220) / 400) * 400; line < playerZ + 170; line += 400) {
+      for (let row = 0; row < 2; row += 1) {
+        for (let square = 0; square < 12; square += 1) {
+          const x = -trackHalfWidth + (square + 0.5) * (roadWidth / 12);
+          const light = (square + row) % 2 === 0;
+          this.box([x, 0.04, line + row * 0.55], [roadWidth / 12 + 0.01, 0.025, 0.56], rgb(light ? '#f4f5ee' : '#171b18'));
+        }
+      }
+      for (const side of [-1, 1]) {
+        this.box([side * (trackHalfWidth + 0.72), 3.1, line], [0.32, 6.2, 0.42], rgb('#87918c'));
+      }
+      this.box([0, 5.75, line], [roadWidth + 2.1, 0.55, 0.7], rgb('#171d19'));
+      this.box([0, 5.72, line - 0.37], [5.2, 0.28, 0.05], rgb('#b9ef42'));
+      for (let light = -2; light <= 2; light += 1) {
+        this.box([light * 0.55, 5.3, line - 0.42], [0.22, 0.22, 0.08], rgb('#e63e31'));
+      }
+      for (let slot = 10; slot <= 74; slot += 8) {
+        const lane = Math.floor(slot / 8) % 2 ? -1.65 : 1.65;
+        this.box([lane, 0.04, line + slot], [2.25, 0.025, 0.09], rgb('#d8ddd7'));
+        this.box([lane - 1.08, 0.04, line + slot - 1.7], [0.09, 0.025, 3.4], rgb('#d8ddd7'));
+      }
+      this.grandstand(trackHalfWidth, line - 58, -1);
+      this.grandstand(trackHalfWidth, line - 58, 1);
+    }
+  }
+
   scene(physics, elapsed, alpha) {
     const gl = this.gl;
     const aspect = this.resize();
@@ -313,28 +398,7 @@ class Renderer3D {
     gl.uniformMatrix4fv(this.viewProjection, false, multiply(projection, view));
     gl.uniform3fv(this.cameraPosition, this.eye);
 
-    const trackCenter = Math.floor(z / 200) * 200;
-    this.box([0, -0.2, trackCenter], [220, 0.3, 600], rgb('#203820'));
-    this.box([0, -0.015, trackCenter], [14, 0.08, 600], rgb('#222925'));
-    this.box([-7.15, 0.32, trackCenter], [0.3, 0.72, 600], rgb('#dbe1d8'));
-    this.box([7.15, 0.32, trackCenter], [0.3, 0.72, 600], rgb('#dbe1d8'));
-    for (let marker = Math.floor((z - 180) / 10) * 10; marker < z + 90; marker += 10) {
-      this.box([0, 0.045, marker], [0.10, 0.025, 4.5], rgb('#c9d0c8'));
-      const curbColor = Math.abs(Math.floor(marker / 5)) % 2 ? rgb('#edf0ea') : rgb('#b9ef42');
-      this.box([-6.75, 0.07, marker], [0.45, 0.10, 5], curbColor);
-      this.box([6.75, 0.07, marker], [0.45, 0.10, 5], curbColor);
-    }
-    for (let detail = Math.floor((z - 100) / 5) * 5; detail < z + 55; detail += 5) {
-      this.box([-3.5, 0.038, detail], [0.08, 0.018, 2.2], rgb('#6f7771'));
-      this.box([3.5, 0.038, detail], [0.08, 0.018, 2.2], rgb('#6f7771'));
-      this.box([-6.15, 0.065, detail], [0.12, 0.07, 0.32], rgb('#dbe8b8'));
-      this.box([6.15, 0.065, detail], [0.12, 0.07, 0.32], rgb('#dbe8b8'));
-    }
-    for (let post = Math.floor((z - 160) / 20) * 20; post < z + 100; post += 20) {
-      this.box([-10.5, 2.0, post], [0.18, 4, 0.18], rgb('#566059'));
-      this.box([10.5, 2.0, post], [0.18, 4, 0.18], rgb('#566059'));
-      this.box([-10.5, 3.8, post], [0.9, 0.18, 4.5], rgb('#66706a'));
-    }
+    this.raceCourse(z, physics.physics_track_half_width());
 
     const colors = ['#b9ef42', '#34d6c6', '#45b9dd', '#24d46b', '#70db31', '#d8e52d', '#f0bf33', '#ff8a38', '#f05e52', '#c766ef'];
     for (let index = 0; index < physics.physics_vehicle_count(); index++) {

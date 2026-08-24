@@ -15,6 +15,7 @@ The integration suite currently covers:
 | 1000 Hz priority timing | 1000 fixed steps advance both world and player exactly one second |
 | render decoupling | different render batching reaches the identical state |
 | browser motion correspondence | Chromium telemetry confirms rendered world displacement tracks physical speed while camera lag remains bounded |
+| circuit collision correspondence | the rendered race-straight barrier width comes from the core and remains physically collidable two kilometers from the start |
 | longitudinal plausibility | full throttle accelerates the RWD reference car in local forward (-Z) |
 | automatic shift acceleration | a 20-second full-throttle run shifts sequentially, remains below the limiter, avoids over-rev failure and continues accelerating |
 | wet-road behavior | water reduces force and produces a non-zero hydroplaning state |

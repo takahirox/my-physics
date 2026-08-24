@@ -22,4 +22,4 @@ pub use feedback::{AudioFrame, FeedbackEvent, FeedbackEventKind, ForceFeedbackFr
 pub use math::{Quat, Vec3};
 pub use tire::{MagicFormulaTire, TireInput, TireModel, TireOutput};
 pub use vehicle::{InterpolatedState, Telemetry, VehicleDefinition, VehicleState};
-pub use world::{Fidelity, PhysicsWorld, SimulationConfig, Snapshot, StepError};
+pub use world::{DEMO_TRACK_HALF_WIDTH_M, Fidelity, PhysicsWorld, SimulationConfig, Snapshot, StepError};

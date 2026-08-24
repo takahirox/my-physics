@@ -1,8 +1,8 @@
 use my_physics::road::RoadCell;
 use my_physics::tire::{TireFailure, TireState};
 use my_physics::{
-    ArchiveError, DriverInput, MagicFormulaTire, PhysicsWorld, SimulationConfig, Snapshot, StepError, TireInput,
-    TireModel, decode_input_history, encode_input_history,
+    ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverInput, MagicFormulaTire, PhysicsWorld, SimulationConfig, Snapshot,
+    StepError, TireInput, TireModel, decode_input_history, encode_input_history,
 };
 
 #[test]
@@ -64,6 +64,17 @@ fn automatic_full_throttle_accelerates_without_chain_shift_failure() {
     assert!(vehicle.state.powertrain.engine_rpm <= vehicle.definition.engine.redline_rpm + 50.0);
     assert!(vehicle.state.powertrain.overrev_damage < 1.0e-8);
     assert!(!vehicle.state.powertrain.failed);
+}
+
+#[test]
+fn demo_circuit_barrier_remains_physical_far_down_the_straight() {
+    let mut world = PhysicsWorld::demo(1);
+    world.vehicles[0].state.position_m = my_physics::Vec3::new(DEMO_TRACK_HALF_WIDTH_M - 0.15, 0.55, -2_000.0);
+    world.vehicles[0].state.linear_velocity_mps = my_physics::Vec3::new(4.0, 0.0, -35.0);
+
+    world.step_fixed(1).unwrap();
+
+    assert!(world.vehicles[0].state.position_m.x <= DEMO_TRACK_HALF_WIDTH_M - 0.94);
 }
 
 #[test]
