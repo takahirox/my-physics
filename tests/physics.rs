@@ -49,6 +49,24 @@ fn throttle_accelerates_reference_vehicle_forward() {
 }
 
 #[test]
+fn automatic_full_throttle_accelerates_without_chain_shift_failure() {
+    let mut world = PhysicsWorld::demo(1);
+    world.set_input(0, DriverInput { throttle: 1.0, gear_request: 0, ..DriverInput::default() }).unwrap();
+
+    world.step_fixed(5_000).unwrap();
+    let speed_at_five_seconds = world.vehicles[0].telemetry.speed_mps;
+    world.step_fixed(15_000).unwrap();
+    let vehicle = &world.vehicles[0];
+
+    assert!(speed_at_five_seconds > 15.0);
+    assert!(vehicle.telemetry.speed_mps > speed_at_five_seconds + 20.0);
+    assert!(vehicle.state.powertrain.gear >= 3);
+    assert!(vehicle.state.powertrain.engine_rpm <= vehicle.definition.engine.redline_rpm + 50.0);
+    assert!(vehicle.state.powertrain.overrev_damage < 1.0e-8);
+    assert!(!vehicle.state.powertrain.failed);
+}
+
+#[test]
 fn wet_road_reduces_available_friction() {
     let model = MagicFormulaTire::default();
     let input = |water| TireInput {

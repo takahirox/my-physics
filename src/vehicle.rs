@@ -447,10 +447,8 @@ impl Vehicle {
         }
         p.shift_timer_s = (p.shift_timer_s - dt).max(0.0);
         let requested_engagement = 1.0 - self.control.clutch;
-        p.clutch_engagement += (requested_engagement - p.clutch_engagement) * clamp01(dt / 0.045);
-        if p.shift_timer_s > 0.0 {
-            p.clutch_engagement *= 0.85;
-        }
+        let engagement_target = if p.shift_timer_s > 0.0 { 0.0 } else { requested_engagement };
+        p.clutch_engagement += (engagement_target - p.clutch_engagement) * clamp01(dt / 0.045);
         let ratio = {
             let g = p.gear;
             if g < 0 {
@@ -483,11 +481,15 @@ impl Vehicle {
                     torque = pair[1].1;
                 }
             }
-            if p.failed || p.fuel_kg <= 0.0 { 0.0 } else { torque * p.throttle_actual }
+            let limiter = clamp01((d.engine.redline_rpm - p.engine_rpm) / 250.0);
+            let shift_torque_cut = if p.shift_timer_s > 0.0 { 0.0 } else { 1.0 };
+            if p.failed || p.fuel_kg <= 0.0 { 0.0 } else { torque * p.throttle_actual * limiter * shift_torque_cut }
         };
         let friction = 12.0 + engine_omega * 0.025;
         let domega = (engine_torque - clutch_torque - friction) / d.engine.inertia_kg_m2 * dt;
-        let new_omega = (engine_omega + domega).max(d.engine.idle_rpm * core::f64::consts::TAU / 60.0);
+        let idle_omega = d.engine.idle_rpm * core::f64::consts::TAU / 60.0;
+        let limiter_omega = (d.engine.redline_rpm + 50.0) * core::f64::consts::TAU / 60.0;
+        let new_omega = (engine_omega + domega).clamp(idle_omega, limiter_omega);
         p.engine_rpm = new_omega * 60.0 / core::f64::consts::TAU;
         let wheel_torque = clutch_torque * ratio * 0.94;
         let slip_power = (clutch_torque * slip).abs();

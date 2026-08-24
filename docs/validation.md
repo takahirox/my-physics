@@ -15,6 +15,7 @@ The integration suite currently covers:
 | 1000 Hz priority timing | 1000 fixed steps advance both world and player exactly one second |
 | render decoupling | different render batching reaches the identical state |
 | longitudinal plausibility | full throttle accelerates the RWD reference car in local forward (-Z) |
+| automatic shift acceleration | a 20-second full-throttle run shifts sequentially, remains below the limiter, avoids over-rev failure and continues accelerating |
 | wet-road behavior | water reduces force and produces a non-zero hydroplaning state |
 | tire failure progression | a finite puncture leaks pressure, changes patch state and advances failure |
 | timestep guard | invalid variable timesteps are rejected |
