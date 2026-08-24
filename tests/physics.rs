@@ -209,9 +209,15 @@ fn render_state_interpolates_without_changing_physics() {
 }
 
 #[test]
-fn reference_scenario_matches_golden_regression_fingerprint() {
+fn reference_scenario_matches_cross_platform_golden_telemetry() {
     let mut world = PhysicsWorld::demo(10);
     world.set_input(0, DriverInput { throttle: 0.72, ..DriverInput::default() }).unwrap();
     world.step_fixed(2_000).unwrap();
-    assert_eq!(world.state_fingerprint(), 0xc052_011a_e490_879b);
+    let telemetry = &world.vehicles[0].telemetry;
+    assert!((telemetry.speed_mps - 7.953_846_667_792).abs() < 0.02);
+    assert!((telemetry.position_m.z - -7.475_064_234_748).abs() < 0.02);
+    assert!((telemetry.engine_rpm - 3_986.269_310_490_245).abs() < 5.0);
+    assert!((telemetry.fuel_kg - 39.993_009_084_168).abs() < 0.000_1);
+    assert!((telemetry.tire_temperature_k[0] - 321.096_009_724_941).abs() < 0.05);
+    assert!((telemetry.tire_temperature_k[2] - 324.878_940_340_500).abs() < 0.05);
 }

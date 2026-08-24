@@ -30,7 +30,7 @@ The integration suite currently covers:
 | long-run stability | quaternion norm and finite state remain bounded in fixed/variable scenarios |
 | smooth LOD | fidelity changes are bounded per tick and converge to the selected profile |
 | continuous interfaces | Audio/FFB state and discrete physical events are populated |
-| golden regression | the fixed two-second ten-vehicle scenario matches its reviewed state fingerprint |
+| golden regression | the fixed two-second ten-vehicle scenario matches reviewed cross-platform telemetry tolerances |
 | conservation/plausibility | pair-collision planar momentum and reference braking distance remain within bounds |
 
 ## Numerical strategy
