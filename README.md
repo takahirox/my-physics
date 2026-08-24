@@ -22,7 +22,7 @@ My Physics is a deterministic, headless-first vehicle and motorsport physics eng
 - Ten-vehicle demo with smoothly changing physics LOD
 - Complete in-memory snapshots, timed input history, restore and deterministic re-simulation
 - Detailed telemetry, CSV-capable headless runner and audio/FFB-ready state access
-- Raw WebAssembly API and rendering-independent Canvas demo
+- Raw WebAssembly API and rendering-independent WebGL2 3D chase-camera demo
 
 ## Run it
 
