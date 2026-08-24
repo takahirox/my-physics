@@ -279,14 +279,32 @@ class Renderer3D {
     const y = physics.physics_render_y(0, alpha);
     const z = physics.physics_render_z(0, alpha);
     const yaw = physics.physics_render_yaw(0, alpha);
+    const speedMps = physics.physics_speed(0);
     const forward = [-Math.sin(yaw), 0, -Math.cos(yaw)];
-    const desiredEye = [x - forward[0] * 10.5, y + 5.8, z - forward[2] * 10.5];
+    const speedRatio = Math.min(speedMps / 65, 1);
+    const desiredEye = [x - forward[0] * 8.8, y + 4.2 - speedRatio * 0.45, z - forward[2] * 8.8];
     if (!this.eye) this.eye = desiredEye;
-    const cameraBlend = 1 - Math.exp(-elapsed * 5.5);
+    const cameraBlend = 1 - Math.exp(-elapsed * 9.0);
     this.eye = this.eye.map((value, index) => value + (desiredEye[index] - value) * cameraBlend);
-    const target = [x + forward[0] * 5.2, y + 0.2, z + forward[2] * 5.2];
-    const projection = perspective(Math.PI / 3.15, aspect, 0.08, 700);
+    const cameraError = desiredEye.map((value, index) => value - this.eye[index]);
+    const unclampedCameraLag = Math.hypot(...cameraError);
+    if (unclampedCameraLag > 2.2) {
+      this.eye = desiredEye.map((value, index) => value - (cameraError[index] / unclampedCameraLag) * 2.2);
+    }
+    const cameraLag = Math.hypot(...desiredEye.map((value, index) => value - this.eye[index]));
+    const target = [x + forward[0] * 6.4, y + 0.15, z + forward[2] * 6.4];
+    const fieldOfViewDegrees = 58 + speedRatio * 16;
+    const projection = perspective((fieldOfViewDegrees * Math.PI) / 180, aspect, 0.08, 700);
     const view = lookAt(this.eye, target);
+
+    window.__MY_PHYSICS_FRAME__ = {
+      simulationTime: physics.physics_time(),
+      speedMps,
+      playerPosition: [x, y, z],
+      cameraPosition: [...this.eye],
+      cameraLag,
+      fieldOfViewDegrees,
+    };
 
     gl.clearColor(0.052, 0.08, 0.061, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -305,6 +323,12 @@ class Renderer3D {
       const curbColor = Math.abs(Math.floor(marker / 5)) % 2 ? rgb('#edf0ea') : rgb('#b9ef42');
       this.box([-6.75, 0.07, marker], [0.45, 0.10, 5], curbColor);
       this.box([6.75, 0.07, marker], [0.45, 0.10, 5], curbColor);
+    }
+    for (let detail = Math.floor((z - 100) / 5) * 5; detail < z + 55; detail += 5) {
+      this.box([-3.5, 0.038, detail], [0.08, 0.018, 2.2], rgb('#6f7771'));
+      this.box([3.5, 0.038, detail], [0.08, 0.018, 2.2], rgb('#6f7771'));
+      this.box([-6.15, 0.065, detail], [0.12, 0.07, 0.32], rgb('#dbe8b8'));
+      this.box([6.15, 0.065, detail], [0.12, 0.07, 0.32], rgb('#dbe8b8'));
     }
     for (let post = Math.floor((z - 160) / 20) * 20; post < z + 100; post += 20) {
       this.box([-10.5, 2.0, post], [0.18, 4, 0.18], rgb('#566059'));

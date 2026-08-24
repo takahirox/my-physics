@@ -9,5 +9,6 @@
 - Added headless CSV, raw WASM API, WebGL2 ten-vehicle demo and automatic/manual device quality selection.
 - Added the 35-test v0.1 validation suite, golden regression and native/WASM/Chromium performance evidence.
 - Fixed automatic-transmission chain shifting and over-rev failure by adding shift torque interruption, smooth clutch disengagement and a deterministic rev limiter.
+- Improved high-speed visual perception with bounded chase-camera lag, speed-sensitive field of view and denser world-space road references without changing physical motion.
 
 The source implementation is complete for the documented v0.1 acceptance matrix. A public release tag and open-source license grant remain pending the owner’s explicitly deferred license decision.
