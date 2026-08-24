@@ -11,7 +11,7 @@ The integration suite currently covers:
 | Test | Evidence |
 |---|---|
 | deterministic repeatability | independent runs produce the same full-state fingerprint |
-| snapshot/replay equivalence | restore plus timed inputs reaches the original fingerprint |
+| snapshot/replay equivalence | restore plus timed inputs reaches the original fingerprint; the WASM K/L fixture also restores keyboard slew/command, input mode and autopilot before reproducing all public physical values |
 | 1000 Hz priority timing | 1000 fixed steps advance both world and player exactly one second |
 | render decoupling | different render batching reaches the identical state |
 | browser motion correspondence | Chromium telemetry confirms rendered world displacement tracks physical speed while camera lag remains bounded |

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 static DEMO: OnceLock<Mutex<PhysicsWorld>> = OnceLock::new();
-static SAVED_SNAPSHOT: OnceLock<Mutex<Option<Snapshot>>> = OnceLock::new();
+static SAVED_SNAPSHOT: OnceLock<Mutex<Option<SavedBrowserState>>> = OnceLock::new();
 static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
 static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
 static KEYBOARD: OnceLock<Mutex<KeyboardInputState>> = OnceLock::new();
@@ -17,6 +17,14 @@ static KEYBOARD: OnceLock<Mutex<KeyboardInputState>> = OnceLock::new();
 struct KeyboardInputState {
     assist: KeyboardSteeringAssist,
     command: DriverInput,
+}
+
+#[derive(Clone, Debug)]
+struct SavedBrowserState {
+    world: Snapshot,
+    keyboard: KeyboardInputState,
+    player_input_mode: u8,
+    player_autopilot: bool,
 }
 
 fn keyboard() -> &'static Mutex<KeyboardInputState> {
@@ -32,7 +40,7 @@ fn with_world<R>(f: impl FnOnce(&mut PhysicsWorld) -> R) -> R {
 fn read_vehicle(index: u32, f: impl FnOnce(&crate::vehicle::Vehicle) -> f64) -> f64 {
     with_world(|w| w.vehicles.get(index as usize).map_or(f64::NAN, f))
 }
-fn saved_snapshot() -> &'static Mutex<Option<Snapshot>> {
+fn saved_snapshot() -> &'static Mutex<Option<SavedBrowserState>> {
     SAVED_SNAPSHOT.get_or_init(|| Mutex::new(None))
 }
 fn yaw(q: Quat) -> f64 {
@@ -249,19 +257,32 @@ pub extern "C" fn physics_audio_tire_scrub(i: u32) -> f64 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_snapshot_save() -> u32 {
-    let snapshot = with_world(|world| world.snapshot());
-    let size = snapshot.to_bytes().len();
+    // Keep the lock order world -> keyboard everywhere that needs both. Raw
+    // input drops the keyboard lock before taking world, so restore cannot
+    // form a reverse-order cycle.
+    let state = with_world(|world| SavedBrowserState {
+        world: world.snapshot(),
+        keyboard: *keyboard().lock().unwrap_or_else(|error| error.into_inner()),
+        player_input_mode: PLAYER_INPUT_MODE.load(Ordering::Relaxed),
+        player_autopilot: PLAYER_AUTOPILOT.load(Ordering::Relaxed),
+    });
+    let size = state.world.to_bytes().len();
     let mut saved = saved_snapshot().lock().unwrap_or_else(|error| error.into_inner());
-    *saved = Some(snapshot);
+    *saved = Some(state);
     size as u32
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_snapshot_restore() -> u32 {
-    let snapshot = saved_snapshot().lock().unwrap_or_else(|error| error.into_inner()).clone();
-    let Some(snapshot) = snapshot else {
+    let state = saved_snapshot().lock().unwrap_or_else(|error| error.into_inner()).clone();
+    let Some(state) = state else {
         return 0;
     };
-    with_world(|world| world.restore(&snapshot));
+    with_world(|world| {
+        world.restore(&state.world);
+        *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = state.keyboard;
+        PLAYER_INPUT_MODE.store(state.player_input_mode, Ordering::Relaxed);
+        PLAYER_AUTOPILOT.store(state.player_autopilot, Ordering::Relaxed);
+    });
     1
 }
 #[unsafe(no_mangle)]
