@@ -502,6 +502,7 @@ try {
     api.physics_set_quality(level);
   });
   benchmarkPhysics();
+  if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
   status.textContent = '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
   status.classList.add('ready');
   requestAnimationFrame(frame);

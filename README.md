@@ -34,7 +34,7 @@ cargo test --all-targets
 ./scripts/serve-web.sh
 ```
 
-Open <http://localhost:8080>. Drive a complete lap with WASD or arrow keys; press P to toggle the AI driver. Use Shift for the clutch, Space for the handbrake, T for automatic mode, R to reset, 1–6 to request a gear, and K/L to save/restore a snapshot. Standard gamepads and common wheel/pedal identifiers are detected through the Gamepad API; axis indices can be overridden with URL parameters such as `?steerAxis=0&throttleAxis=1&brakeAxis=2&clutchAxis=3`.
+Open <http://localhost:8080>. Drive a complete lap with WASD or arrow keys; press P to toggle the AI driver (or open `?autopilot=1`). Use Shift for the clutch, Space for the handbrake, T for automatic mode, R to reset, 1–6 to request a gear, and K/L to save/restore a snapshot. Standard gamepads and common wheel/pedal identifiers are detected through the Gamepad API; axis indices can be overridden with URL parameters such as `?steerAxis=0&throttleAxis=1&brakeAxis=2&clutchAxis=3`.
 
 For a rendering-free simulation and CSV telemetry:
 
