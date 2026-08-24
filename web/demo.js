@@ -42,7 +42,9 @@ class InputAdapter {
   }
 
   read() {
-    let steer = (keys.has('ArrowLeft') || keys.has('KeyA') ? -1 : 0) + (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0);
+    const keyboardSteer =
+      (keys.has('ArrowLeft') || keys.has('KeyA') ? -1 : 0) + (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0);
+    let steer = keyboardSteer;
     let throttle = keys.has('ArrowUp') || keys.has('KeyW') ? 1 : 0;
     let brake = keys.has('ArrowDown') || keys.has('KeyS') ? 1 : 0;
     let clutch = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0;
@@ -53,7 +55,7 @@ class InputAdapter {
       const isWheel = /wheel|g29|g920|g923|t150|t248|t300|t500|fanatec|moza|simagic/i.test(pad.id);
       device = isWheel ? `WHEEL · ${pad.id}` : `GAMEPAD · ${pad.id}`;
       if (isWheel) {
-        steer = this.axis(pad, 'steer', 0);
+        if (keyboardSteer === 0) steer = this.axis(pad, 'steer', 0);
         throttle = Math.max(throttle, this.pedal(this.axis(pad, 'throttle', 1)));
         brake = Math.max(brake, this.pedal(this.axis(pad, 'brake', 2)));
         clutch = Math.max(clutch, this.pedal(this.axis(pad, 'clutch', 3)));
@@ -385,6 +387,9 @@ class Renderer3D {
     window.__MY_PHYSICS_FRAME__ = {
       simulationTime: physics.physics_time(),
       speedMps,
+      yaw,
+      steering: physics.physics_steering(0),
+      escActive: physics.physics_esc_active(0) !== 0,
       playerPosition: [x, y, z],
       cameraPosition: [...this.eye],
       cameraLag,
@@ -454,6 +459,14 @@ function frame(now) {
   previous = now;
   accumulator += elapsed;
   const input = inputAdapter.read();
+  window.__MY_PHYSICS_INPUT__ = {
+    steer: input.steer,
+    throttle: input.throttle,
+    brake: input.brake,
+    clutch: input.clutch,
+    handbrake: input.handbrake,
+    device: input.device,
+  };
   ui.inputDevice.textContent = input.device;
   api.physics_set_input(input.steer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
   const steps = Math.min(Math.floor(accumulator / 0.001), 50);

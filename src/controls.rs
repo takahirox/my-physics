@@ -113,11 +113,34 @@ impl DriverAids {
             }
         }
         if self.stability_control_enabled && s.speed_mps > 5.0 {
-            let desired_yaw = -out.steering * s.speed_mps / 8.5;
-            let yaw_error = s.yaw_rate_rad_s - desired_yaw;
-            if yaw_error.abs() > 0.22 {
-                let wheel = if yaw_error > 0.0 { 0 } else { 1 };
-                out.brake_per_wheel[wheel] = (out.brake_per_wheel[wheel] + yaw_error.abs() * 0.18).min(1.0);
+            // A bicycle-model reference is bounded by the yaw rate that the
+            // available tire friction can physically sustain. The previous
+            // normalized-steering shortcut requested several radians/second
+            // at motorway speeds and then braked the wheel that reinforced
+            // the error, so full keyboard lock suppressed the turn.
+            let road_wheel_angle = out.steering * 0.54;
+            let kinematic_yaw = -s.speed_mps * road_wheel_angle.tan() / 2.51;
+            let friction_limited_yaw = 1.15 * 9.80665 / s.speed_mps.max(1.0);
+            let desired_yaw = kinematic_yaw.clamp(-friction_limited_yaw, friction_limited_yaw);
+            let actual_yaw = s.yaw_rate_rad_s;
+            let same_turn_direction = desired_yaw * actual_yaw > 0.0;
+            let oversteer = same_turn_direction && actual_yaw.abs() > desired_yaw.abs() + 0.16;
+            let opposite_yaw = desired_yaw.abs() > 0.05 && desired_yaw * actual_yaw < -0.01;
+            let uncommanded_yaw = desired_yaw.abs() <= 0.05 && actual_yaw.abs() > 0.22;
+
+            let correction = if oversteer || uncommanded_yaw {
+                // Counter the current yaw with the outside front wheel.
+                Some((if actual_yaw > 0.0 { 1 } else { 0 }, actual_yaw.abs() - desired_yaw.abs()))
+            } else if opposite_yaw {
+                // Establish the requested yaw with the inside rear wheel.
+                Some((if desired_yaw > 0.0 { 2 } else { 3 }, (actual_yaw - desired_yaw).abs()))
+            } else {
+                None
+            };
+
+            if let Some((wheel, error)) = correction {
+                let intervention = ((error - 0.06).max(0.0) * 0.32).min(0.38);
+                out.brake_per_wheel[wheel] = (out.brake_per_wheel[wheel] + intervention).min(1.0);
                 out.esc_active = true;
             }
         }

@@ -112,6 +112,14 @@ pub extern "C" fn physics_gear(i: u32) -> f64 {
     read_vehicle(i, |v| v.state.powertrain.gear as f64)
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn physics_steering(i: u32) -> f64 {
+    read_vehicle(i, |v| v.control.steering)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_esc_active(i: u32) -> f64 {
+    read_vehicle(i, |v| if v.control.esc_active { 1.0 } else { 0.0 })
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn physics_tire_temp(i: u32, wheel: u32) -> f64 {
     read_vehicle(i, |v| v.state.wheels.get(wheel as usize).map_or(f64::NAN, |w| w.tire.tread_temperature_k))
 }

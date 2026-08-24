@@ -1,8 +1,10 @@
+use my_physics::controls::AidSensors;
 use my_physics::road::RoadCell;
 use my_physics::tire::{TireFailure, TireState};
 use my_physics::{
-    ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverInput, MagicFormulaTire, PhysicsWorld, SimulationConfig, Snapshot,
-    StepError, TireInput, TireModel, decode_input_history, encode_input_history,
+    ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverAids, DriverInput, MagicFormulaTire, PhysicsWorld, Quat,
+    SimulationConfig, Snapshot, StepError, TireInput, TireModel, VehicleDefinition, decode_input_history,
+    encode_input_history,
 };
 
 #[test]
@@ -75,6 +77,57 @@ fn demo_circuit_barrier_remains_physical_far_down_the_straight() {
     world.step_fixed(1).unwrap();
 
     assert!(world.vehicles[0].state.position_m.x <= DEMO_TRACK_HALF_WIDTH_M - 0.94);
+}
+
+fn yaw_radians(q: Quat) -> f64 {
+    (2.0 * (q.w * q.y + q.x * q.z)).atan2(1.0 - 2.0 * (q.y * q.y + q.x * q.x))
+}
+
+#[test]
+fn esc_uses_corrective_wheels_instead_of_suppressing_the_requested_turn() {
+    let sensors = |yaw_rate_rad_s| AidSensors { wheel_slip: [0.0; 4], speed_mps: 40.0, yaw_rate_rad_s };
+    let right = DriverInput { steering: 1.0, ..DriverInput::default() };
+    let left = DriverInput { steering: -1.0, ..DriverInput::default() };
+
+    let right_oversteer = DriverAids::default().update(right, sensors(-0.8), 0.001);
+    assert!(right_oversteer.esc_active);
+    assert!(right_oversteer.brake_per_wheel[0] > 0.0);
+    assert_eq!(right_oversteer.brake_per_wheel[1..], [0.0; 3]);
+
+    let left_oversteer = DriverAids::default().update(left, sensors(0.8), 0.001);
+    assert!(left_oversteer.esc_active);
+    assert!(left_oversteer.brake_per_wheel[1] > 0.0);
+    assert_eq!(left_oversteer.brake_per_wheel[0], 0.0);
+    assert_eq!(left_oversteer.brake_per_wheel[2..], [0.0; 2]);
+
+    let right_opposite_yaw = DriverAids::default().update(right, sensors(0.3), 0.001);
+    assert!(right_opposite_yaw.esc_active);
+    assert!(right_opposite_yaw.brake_per_wheel[3] > 0.0);
+}
+
+#[test]
+fn full_keyboard_steering_remains_effective_and_left_right_symmetric_at_speed() {
+    let mut entry = PhysicsWorld::new(SimulationConfig::default());
+    let index = entry.add_vehicle(VehicleDefinition::default());
+    entry.vehicles[index].state.position_m.y = 0.55;
+    entry.set_input(index, DriverInput { throttle: 1.0, ..DriverInput::default() }).unwrap();
+    entry.step_fixed(10_000).unwrap();
+    let snapshot = entry.snapshot();
+
+    let response = |steering| {
+        let mut world = PhysicsWorld::new(SimulationConfig::default());
+        world.restore(&snapshot);
+        world.set_input(0, DriverInput { throttle: 1.0, steering, ..DriverInput::default() }).unwrap();
+        world.step_fixed(1_000).unwrap();
+        (yaw_radians(world.vehicles[0].state.orientation), world.vehicles[0].state.position_m.x)
+    };
+    let (right_yaw, right_x) = response(1.0);
+    let (left_yaw, left_x) = response(-1.0);
+
+    assert!(right_yaw < -0.45, "right_yaw={right_yaw}");
+    assert!(left_yaw > 0.45, "left_yaw={left_yaw}");
+    assert!((right_yaw.abs() - left_yaw.abs()).abs() < 0.06);
+    assert!(right_x > 2.5 && left_x < -2.5, "right_x={right_x}, left_x={left_x}");
 }
 
 #[test]
