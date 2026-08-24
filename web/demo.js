@@ -1,7 +1,7 @@
 const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
 const ui = Object.fromEntries(
-  ['speed', 'rpm', 'gear', 'time', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality'].map(
+  ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality'].map(
     (id) => [id, document.querySelector(`#${id}`)],
   ),
 );
@@ -10,12 +10,21 @@ let api;
 let previous = performance.now();
 let accumulator = 0;
 let gear = 0;
+let completedLaps = 0;
+let previousProgress;
 
 addEventListener('keydown', (event) => {
   keys.add(event.code);
   if (/^Digit[1-6]$/.test(event.code)) gear = Number(event.code.at(-1));
   if (event.code === 'KeyT') gear = 0;
-  if (event.code === 'KeyR') api?.physics_reset();
+  if (event.code === 'KeyR') {
+    api?.physics_reset();
+    completedLaps = 0;
+    previousProgress = undefined;
+  }
+  if (event.code === 'KeyP' && api && !event.repeat) {
+    api.physics_set_player_autopilot(api.physics_player_autopilot() ? 0 : 1);
+  }
   if (event.code === 'KeyK' && api) {
     const bytes = api.physics_snapshot_save();
     ui.snapshotStatus.textContent = `SAVED · ${(bytes / 1024).toFixed(0)} KiB`;
@@ -274,89 +283,78 @@ class Renderer3D {
     }
   }
 
-  grandstand(trackHalfWidth, centerZ, side) {
+  grandstand(position, yaw, trackHalfWidth, side) {
     const baseX = side * (trackHalfWidth + 4.3);
     for (let row = 0; row < 5; row += 1) {
       const x = baseX + side * row * 0.9;
-      this.box([x, 0.4 + row * 0.48, centerZ], [1.0, 0.75, 30], rgb(row % 2 ? '#303a36' : '#46534d'));
+      this.box(this.localPoint(position, yaw, [x, 0.4 + row * 0.48, 0]), [1.0, 0.75, 30], rgb(row % 2 ? '#303a36' : '#46534d'), yaw);
       for (let seat = -13; seat <= 13; seat += 2) {
         const seatColor = Math.abs(seat + row) % 4 ? '#c5d0c8' : '#b9ef42';
-        this.box([x - side * 0.5, 0.88 + row * 0.48, centerZ + seat], [0.18, 0.16, 1.1], rgb(seatColor));
+        this.box(this.localPoint(position, yaw, [x - side * 0.5, 0.88 + row * 0.48, seat]), [0.18, 0.16, 1.1], rgb(seatColor), yaw);
       }
     }
-    this.box([baseX + side * 2.1, 3.4, centerZ], [5.7, 0.22, 32], rgb('#c4cbc4'));
-    this.box([baseX + side * 4.8, 1.7, centerZ], [0.18, 3.4, 32], rgb('#6f7974'));
+    this.box(this.localPoint(position, yaw, [baseX + side * 2.1, 3.4, 0]), [5.7, 0.22, 32], rgb('#c4cbc4'), yaw);
+    this.box(this.localPoint(position, yaw, [baseX + side * 4.8, 1.7, 0]), [0.18, 3.4, 32], rgb('#6f7974'), yaw);
   }
 
-  raceCourse(playerZ, trackHalfWidth) {
-    const trackCenter = Math.floor(playerZ / 400) * 400;
+  raceCourse(physics, playerPosition, trackHalfWidth) {
+    if (!this.circuit) {
+      this.circuit = Array.from({ length: physics.physics_track_segment_count() }, (_, index) => ({
+        position: [physics.physics_track_segment_x(index), 0, physics.physics_track_segment_z(index)],
+        yaw: physics.physics_track_segment_yaw(index),
+        length: physics.physics_track_segment_length(index),
+      }));
+    }
     const roadWidth = trackHalfWidth * 2;
-    this.box([0, -0.2, trackCenter], [220, 0.3, 800], rgb('#18351d'));
-    this.box([0, -0.015, trackCenter], [roadWidth, 0.08, 800], rgb('#202522'));
-    this.box([-trackHalfWidth + 0.12, 0.035, trackCenter], [0.16, 0.025, 800], rgb('#f0f2ec'));
-    this.box([trackHalfWidth - 0.12, 0.035, trackCenter], [0.16, 0.025, 800], rgb('#f0f2ec'));
+    this.box([0, -0.22, 0], [280, 0.32, 270], rgb('#18351d'));
 
-    for (const side of [-1, 1]) {
-      const barrierX = side * (trackHalfWidth + 0.3);
-      this.box([barrierX, 0.34, trackCenter], [0.6, 0.68, 800], rgb('#bcc3be'));
-      this.box([barrierX - side * 0.305, 0.24, trackCenter], [0.035, 0.26, 800], rgb('#59615d'));
-    }
-
-    for (let detail = Math.floor((playerZ - 150) / 2) * 2; detail < playerZ + 65; detail += 2) {
-      const lineOffset = Math.sin(detail * 0.031) * 0.22;
-      this.box([-0.92 + lineOffset, 0.031, detail], [0.065, 0.014, 1.25], rgb('#111512'));
-      this.box([0.92 + lineOffset, 0.031, detail], [0.065, 0.014, 1.25], rgb('#111512'));
-    }
-    for (let seam = Math.floor((playerZ - 150) / 12) * 12; seam < playerZ + 65; seam += 12) {
-      this.box([0, 0.027, seam], [roadWidth - 0.5, 0.009, 0.045], rgb('#111512'));
-    }
-    for (let curb = Math.floor((playerZ - 170) / 4) * 4; curb < playerZ + 80; curb += 4) {
-      const curbColor = Math.abs(Math.floor(curb / 4)) % 2 ? rgb('#f4f2e9') : rgb('#d9342b');
-      this.box([-trackHalfWidth + 0.3, 0.065, curb], [0.6, 0.10, 3.9], curbColor);
-      this.box([trackHalfWidth - 0.3, 0.065, curb], [0.6, 0.10, 3.9], curbColor);
-      this.box([-trackHalfWidth + 0.78, 0.055, curb], [0.11, 0.055, 0.35], rgb('#f5f2c9'));
-      this.box([trackHalfWidth - 0.78, 0.055, curb], [0.11, 0.055, 0.35], rgb('#f5f2c9'));
-    }
-    for (let fence = Math.floor((playerZ - 170) / 8) * 8; fence < playerZ + 90; fence += 8) {
-      for (const side of [-1, 1]) {
-        const x = side * (trackHalfWidth + 0.68);
-        this.box([x, 1.45, fence], [0.09, 2.9, 0.09], rgb('#77817c'));
-        this.box([x, 2.3, fence + 2.0], [0.055, 0.055, 4.0], rgb('#8c9691'));
+    for (let index = 0; index < this.circuit.length; index += 1) {
+      const segment = this.circuit[index];
+      const midpoint = this.localPoint(segment.position, segment.yaw, [0, 0, -segment.length * 0.5]);
+      const distance = Math.hypot(midpoint[0] - playerPosition[0], midpoint[2] - playerPosition[2]);
+      if (distance > 235) continue;
+      const joinLength = segment.length + 0.65;
+      this.box([midpoint[0], -0.015, midpoint[2]], [roadWidth, 0.08, joinLength], rgb('#202522'), segment.yaw);
+      this.box(this.localPoint(midpoint, segment.yaw, [-trackHalfWidth + 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.yaw);
+      this.box(this.localPoint(midpoint, segment.yaw, [trackHalfWidth - 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.yaw);
+      for (const rubber of [-0.88, 0.88]) {
+        this.box(this.localPoint(midpoint, segment.yaw, [rubber, 0.032, 0]), [0.07, 0.014, joinLength * 0.82], rgb('#111512'), segment.yaw);
       }
-    }
-    for (let board = Math.floor((playerZ - 180) / 100) * 100; board < playerZ + 100; board += 100) {
       for (const side of [-1, 1]) {
-        const x = side * (trackHalfWidth + 1.25);
-        this.box([x, 1.0, board], [0.10, 2.0, 0.10], rgb('#707873'));
-        this.box([x, 2.05, board], [1.05, 0.75, 0.16], rgb('#f0f1eb'));
-        this.box([x - side * 0.02, 2.05, board - 0.09], [0.55, 0.16, 0.04], rgb('#d9342b'));
-      }
-    }
-
-    for (let line = Math.floor((playerZ - 220) / 400) * 400; line < playerZ + 170; line += 400) {
-      for (let row = 0; row < 2; row += 1) {
-        for (let square = 0; square < 12; square += 1) {
-          const x = -trackHalfWidth + (square + 0.5) * (roadWidth / 12);
-          const light = (square + row) % 2 === 0;
-          this.box([x, 0.04, line + row * 0.55], [roadWidth / 12 + 0.01, 0.025, 0.56], rgb(light ? '#f4f5ee' : '#171b18'));
+        const curbColor = index % 4 < 2 ? rgb('#f4f2e9') : rgb('#d9342b');
+        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth - 0.3), 0.07, 0]), [0.6, 0.1, joinLength], curbColor, segment.yaw);
+        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.3), 0.34, 0]), [0.6, 0.68, joinLength], rgb('#bcc3be'), segment.yaw);
+        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.62), 0.24, 0]), [0.035, 0.26, joinLength], rgb('#59615d'), segment.yaw);
+        if (index % 4 === 0) {
+          this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.72), 1.45, 0]), [0.09, 2.9, 0.09], rgb('#77817c'), segment.yaw);
+          this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.72), 2.3, -segment.length * 1.8]), [0.055, 0.055, segment.length * 3.6], rgb('#8c9691'), segment.yaw);
         }
       }
-      for (const side of [-1, 1]) {
-        this.box([side * (trackHalfWidth + 0.72), 3.1, line], [0.32, 6.2, 0.42], rgb('#87918c'));
+      if (index % 24 === 0 && index !== 0) {
+        const board = this.localPoint(segment.position, segment.yaw, [trackHalfWidth + 1.25, 0, 0]);
+        this.box([board[0], 1.0, board[2]], [0.1, 2.0, 0.1], rgb('#707873'), segment.yaw);
+        this.box([board[0], 2.05, board[2]], [1.05, 0.75, 0.16], rgb('#f0f1eb'), segment.yaw);
       }
-      this.box([0, 5.75, line], [roadWidth + 2.1, 0.55, 0.7], rgb('#171d19'));
-      this.box([0, 5.72, line - 0.37], [5.2, 0.28, 0.05], rgb('#b9ef42'));
-      for (let light = -2; light <= 2; light += 1) {
-        this.box([light * 0.55, 5.3, line - 0.42], [0.22, 0.22, 0.08], rgb('#e63e31'));
-      }
-      for (let slot = 10; slot <= 74; slot += 8) {
-        const lane = Math.floor(slot / 8) % 2 ? -1.65 : 1.65;
-        this.box([lane, 0.04, line + slot], [2.25, 0.025, 0.09], rgb('#d8ddd7'));
-        this.box([lane - 1.08, 0.04, line + slot - 1.7], [0.09, 0.025, 3.4], rgb('#d8ddd7'));
-      }
-      this.grandstand(trackHalfWidth, line - 58, -1);
-      this.grandstand(trackHalfWidth, line - 58, 1);
     }
+
+    const start = this.circuit[0];
+    for (let row = 0; row < 2; row += 1) {
+      for (let square = 0; square < 12; square += 1) {
+        const local = [-trackHalfWidth + (square + 0.5) * (roadWidth / 12), 0.055, row * 0.55];
+        const point = this.localPoint(start.position, start.yaw, local);
+        this.box(point, [roadWidth / 12 + 0.01, 0.025, 0.56], rgb((square + row) % 2 ? '#171b18' : '#f4f5ee'), start.yaw);
+      }
+    }
+    for (const side of [-1, 1]) this.box(this.localPoint(start.position, start.yaw, [side * (trackHalfWidth + 0.72), 3.1, 0]), [0.32, 6.2, 0.42], rgb('#87918c'), start.yaw);
+    this.box(this.localPoint(start.position, start.yaw, [0, 5.75, 0]), [roadWidth + 2.1, 0.55, 0.7], rgb('#171d19'), start.yaw);
+    this.box(this.localPoint(start.position, start.yaw, [0, 5.72, 0.37]), [5.2, 0.28, 0.05], rgb('#b9ef42'), start.yaw);
+    for (let slot = 8; slot <= 44; slot += 8) {
+      const lane = Math.floor(slot / 8) % 2 ? -1.65 : 1.65;
+      this.box(this.localPoint(start.position, start.yaw, [lane, 0.05, slot]), [2.25, 0.025, 0.09], rgb('#d8ddd7'), start.yaw);
+    }
+    const stands = this.localPoint(start.position, start.yaw, [0, 0, 24]);
+    this.grandstand(stands, start.yaw, trackHalfWidth, -1);
+    this.grandstand(stands, start.yaw, trackHalfWidth, 1);
   }
 
   scene(physics, elapsed, alpha) {
@@ -403,7 +401,7 @@ class Renderer3D {
     gl.uniformMatrix4fv(this.viewProjection, false, multiply(projection, view));
     gl.uniform3fv(this.cameraPosition, this.eye);
 
-    this.raceCourse(z, physics.physics_track_half_width());
+    this.raceCourse(physics, [x, y, z], physics.physics_track_half_width());
 
     const colors = ['#b9ef42', '#34d6c6', '#45b9dd', '#24d46b', '#70db31', '#d8e52d', '#f0bf33', '#ff8a38', '#f05e52', '#c766ef'];
     for (let index = 0; index < physics.physics_vehicle_count(); index++) {
@@ -422,6 +420,12 @@ function updateUi() {
   ui.rpm.textContent = Math.round(api.physics_rpm(0));
   ui.gear.textContent = Math.round(api.physics_gear(0));
   ui.time.textContent = api.physics_time().toFixed(2);
+  const progress = api.physics_track_progress(0);
+  if (previousProgress > 0.82 && progress < 0.18) completedLaps += 1;
+  if (previousProgress < 0.18 && progress > 0.82) completedLaps = Math.max(0, completedLaps - 1);
+  previousProgress = progress;
+  ui.lap.textContent = `${completedLaps + 1} · ${Math.round(progress * 100)}%`;
+  ui.trackLength.textContent = `${(api.physics_track_length() / 1000).toFixed(2)} km`;
   ui.lod.textContent = Math.round(api.physics_fidelity(0) * 100);
   ui.ffb.textContent = `${api.physics_ffb_steering_torque(0).toFixed(1)} Nm`;
   const damage = api.physics_damage(0);
@@ -467,7 +471,7 @@ function frame(now) {
     handbrake: input.handbrake,
     device: input.device,
   };
-  ui.inputDevice.textContent = input.device;
+  ui.inputDevice.textContent = api.physics_player_autopilot() ? 'AI DRIVER · P' : input.device;
   api.physics_set_input(input.steer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
   const steps = Math.min(Math.floor(accumulator / 0.001), 50);
   if (steps) {

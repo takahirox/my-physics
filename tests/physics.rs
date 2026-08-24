@@ -1,3 +1,4 @@
+use my_physics::circuit::segments;
 use my_physics::controls::AidSensors;
 use my_physics::road::RoadCell;
 use my_physics::tire::{TireFailure, TireState};
@@ -45,14 +46,20 @@ fn high_priority_vehicle_runs_at_one_kilohertz() {
 #[test]
 fn throttle_accelerates_reference_vehicle_forward() {
     let mut w = PhysicsWorld::demo(1);
+    let forward = w.vehicles[0].state.orientation.rotate(my_physics::Vec3::FORWARD);
     w.set_input(0, DriverInput { throttle: 1.0, ..DriverInput::default() }).unwrap();
     w.step_fixed(4000).unwrap();
-    assert!(w.vehicles[0].state.linear_velocity_mps.z < -0.5, "velocity={:?}", w.vehicles[0].state.linear_velocity_mps);
+    assert!(
+        w.vehicles[0].state.linear_velocity_mps.dot(forward) > 0.5,
+        "velocity={:?}",
+        w.vehicles[0].state.linear_velocity_mps
+    );
 }
 
 #[test]
 fn automatic_full_throttle_accelerates_without_chain_shift_failure() {
     let mut world = PhysicsWorld::demo(1);
+    world.static_colliders.clear();
     world.set_input(0, DriverInput { throttle: 1.0, gear_request: 0, ..DriverInput::default() }).unwrap();
 
     world.step_fixed(5_000).unwrap();
@@ -69,14 +76,18 @@ fn automatic_full_throttle_accelerates_without_chain_shift_failure() {
 }
 
 #[test]
-fn demo_circuit_barrier_remains_physical_far_down_the_straight() {
+fn demo_circuit_barrier_follows_a_remote_curve() {
     let mut world = PhysicsWorld::demo(1);
-    world.vehicles[0].state.position_m = my_physics::Vec3::new(DEMO_TRACK_HALF_WIDTH_M - 0.15, 0.55, -2_000.0);
-    world.vehicles[0].state.linear_velocity_mps = my_physics::Vec3::new(4.0, 0.0, -35.0);
+    let segment = segments()[80];
+    world.vehicles[0].state.position_m =
+        segment.center_m + segment.right * (DEMO_TRACK_HALF_WIDTH_M - 0.15) + my_physics::Vec3::new(0.0, 0.55, 0.0);
+    world.vehicles[0].state.orientation = Quat::from_axis_angle(my_physics::Vec3::Y, segment.yaw_rad);
+    world.vehicles[0].state.linear_velocity_mps = segment.forward * 35.0 + segment.right * 4.0;
 
     world.step_fixed(1).unwrap();
 
-    assert!(world.vehicles[0].state.position_m.x <= DEMO_TRACK_HALF_WIDTH_M - 0.94);
+    let lateral = (world.vehicles[0].state.position_m - segment.center_m).dot(segment.right);
+    assert!(lateral <= DEMO_TRACK_HALF_WIDTH_M - 0.9, "lateral={lateral}");
 }
 
 fn yaw_radians(q: Quat) -> f64 {
@@ -234,10 +245,13 @@ fn engine_damage_accumulates_with_exposure_duration() {
 #[test]
 fn vehicle_collision_applies_impulse_and_physical_damage() {
     let mut w = PhysicsWorld::demo(2);
+    w.static_colliders.clear();
     w.vehicles[0].state.position_m.x = 0.0;
     w.vehicles[0].state.position_m.z = 0.0;
     w.vehicles[1].state.position_m.x = 0.0;
     w.vehicles[1].state.position_m.z = -3.5;
+    w.vehicles[0].state.orientation = Quat::IDENTITY;
+    w.vehicles[1].state.orientation = Quat::IDENTITY;
     w.vehicles[0].state.linear_velocity_mps.z = -10.0;
     w.vehicles[1].state.linear_velocity_mps.z = 10.0;
     w.step_fixed(1).unwrap();
@@ -292,7 +306,10 @@ fn render_state_interpolates_without_changing_physics() {
 
 #[test]
 fn reference_scenario_matches_cross_platform_golden_telemetry() {
-    let mut world = PhysicsWorld::demo(10);
+    let mut world = PhysicsWorld::new(SimulationConfig::default());
+    let vehicle = world.add_vehicle(VehicleDefinition::default());
+    world.vehicles[vehicle].state.position_m = my_physics::Vec3::new(-1.6, 0.55, 0.0);
+    world.vehicles[vehicle].previous_position_m = world.vehicles[vehicle].state.position_m;
     world.set_input(0, DriverInput { throttle: 0.72, ..DriverInput::default() }).unwrap();
     world.step_fixed(2_000).unwrap();
     let telemetry = &world.vehicles[0].telemetry;

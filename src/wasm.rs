@@ -4,10 +4,12 @@
 #![allow(unsafe_code)]
 
 use crate::{DriverInput, Fidelity, PhysicsWorld, Quat, Snapshot};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 static DEMO: OnceLock<Mutex<PhysicsWorld>> = OnceLock::new();
 static SAVED_SNAPSHOT: OnceLock<Mutex<Option<Snapshot>>> = OnceLock::new();
+static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
 fn demo() -> &'static Mutex<PhysicsWorld> {
     DEMO.get_or_init(|| Mutex::new(PhysicsWorld::demo(10)))
 }
@@ -28,6 +30,7 @@ fn yaw(q: Quat) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_reset() {
     with_world(|w| *w = PhysicsWorld::demo(10));
+    PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_set_input(steering: f64, throttle: f64, brake: f64, clutch: f64, handbrake: f64, gear: i32) {
@@ -39,17 +42,17 @@ pub extern "C" fn physics_set_input(steering: f64, throttle: f64, brake: f64, cl
 pub extern "C" fn physics_step(steps: u32) {
     with_world(|w| {
         for _ in 0..steps {
-            let time = w.time_s;
-            for n in 1..w.vehicles.len() {
-                let phase = n as f64 * 0.7;
-                let _ = w.set_input_unrecorded(
-                    n,
-                    DriverInput {
-                        steering: 0.0,
-                        throttle: 0.48 + 0.08 * (phase + time * 0.1).sin(),
-                        ..DriverInput::default()
-                    },
+            let ai_start = if PLAYER_AUTOPILOT.load(Ordering::Relaxed) { 0 } else { 1 };
+            for n in ai_start..w.vehicles.len() {
+                let vehicle = &w.vehicles[n];
+                let lane = if n % 2 == 0 { -0.35 } else { 0.35 };
+                let input = crate::circuit::ai_driver_input(
+                    vehicle.state.position_m,
+                    vehicle.state.orientation,
+                    vehicle.telemetry.speed_mps,
+                    lane,
                 );
+                let _ = w.set_input_unrecorded(n, input);
             }
             let _ = w.step_fixed(1);
         }
@@ -62,6 +65,44 @@ pub extern "C" fn physics_vehicle_count() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_track_half_width() -> f64 {
     crate::world::DEMO_TRACK_HALF_WIDTH_M
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_count() -> u32 {
+    crate::circuit::segments().len() as u32
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_length() -> f64 {
+    crate::circuit::total_length_m()
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_x(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.center_m.x)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_z(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.center_m.z)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_yaw(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.yaw_rad)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_length(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.length_m)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_progress(index: u32) -> f64 {
+    read_vehicle(index, |vehicle| {
+        crate::circuit::nearest_segment(vehicle.state.position_m) as f64 / crate::circuit::segments().len() as f64
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_set_player_autopilot(enabled: u32) {
+    PLAYER_AUTOPILOT.store(enabled != 0, Ordering::Relaxed);
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_player_autopilot() -> u32 {
+    u32::from(PLAYER_AUTOPILOT.load(Ordering::Relaxed))
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_time() -> f64 {

@@ -1,3 +1,4 @@
+use crate::circuit;
 use crate::collision::{CollisionShape, DetachedBody, StaticCollider, oriented_box_contact, vehicle_static_contact};
 use crate::controls::DriverInput;
 use crate::math::{Quat, Vec3, clamp01, semi_implicit_linear_step};
@@ -7,8 +8,6 @@ use crate::vehicle::{Vehicle, VehicleDefinition, evaluate_tire};
 
 /// Inner face of the barriers on the procedural v0.1 demonstration circuit.
 pub const DEMO_TRACK_HALF_WIDTH_M: f64 = 5.6;
-const DEMO_TRACK_COLLIDER_CENTER_Z_M: f64 = -5_000.0;
-const DEMO_TRACK_COLLIDER_HALF_LENGTH_M: f64 = 5_100.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fidelity {
@@ -129,29 +128,33 @@ impl PhysicsWorld {
     }
     pub fn demo(vehicle_count: usize) -> Self {
         let mut w = Self::new(SimulationConfig::default());
+        let circuit = circuit::segments();
         for n in 0..vehicle_count {
             let mut v = Vehicle::new(VehicleDefinition::default());
-            v.state.position_m = Vec3::new((n % 2) as f64 * 3.2 - 1.6, 0.55, (n / 2) as f64 * 5.5);
+            let row = n / 2;
+            let segment = circuit[(circuit.len() + circuit.len() - row * 2) % circuit.len()];
+            let lateral = if n % 2 == 0 { -1.55 } else { 1.55 };
+            v.state.position_m = segment.center_m + segment.right * lateral + Vec3::new(0.0, 0.55, 0.0);
+            v.state.orientation = Quat::from_axis_angle(Vec3::Y, segment.yaw_rad);
+            v.previous_position_m = v.state.position_m;
+            v.previous_orientation = v.state.orientation;
             v.target_fidelity = if n == 0 { 1.0 } else { 0.6 };
             w.vehicles.push(v);
         }
-        for x in [-(DEMO_TRACK_HALF_WIDTH_M + 0.3), DEMO_TRACK_HALF_WIDTH_M + 0.3] {
-            w.static_colliders.push(StaticCollider {
-                position_m: Vec3::new(x, 1.0, DEMO_TRACK_COLLIDER_CENTER_Z_M),
-                orientation: Quat::IDENTITY,
-                shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 1.0, DEMO_TRACK_COLLIDER_HALF_LENGTH_M) },
-                restitution: 0.15,
-                friction: 0.8,
-            });
-        }
-        for x in [-(DEMO_TRACK_HALF_WIDTH_M - 0.3), DEMO_TRACK_HALF_WIDTH_M - 0.3] {
-            w.static_colliders.push(StaticCollider {
-                position_m: Vec3::new(x, 0.09, DEMO_TRACK_COLLIDER_CENTER_Z_M),
-                orientation: Quat::IDENTITY,
-                shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 0.09, DEMO_TRACK_COLLIDER_HALF_LENGTH_M) },
-                restitution: 0.05,
-                friction: 0.95,
-            });
+        for segment in circuit {
+            let orientation = Quat::from_axis_angle(Vec3::Y, segment.yaw_rad);
+            for side in [-1.0, 1.0] {
+                w.static_colliders.push(StaticCollider {
+                    position_m: segment.center_m
+                        + segment.forward * (segment.length_m * 0.5)
+                        + segment.right * side * (DEMO_TRACK_HALF_WIDTH_M + 0.3)
+                        + Vec3::new(0.0, 1.0, 0.0),
+                    orientation,
+                    shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 1.0, segment.length_m * 0.5 + 0.12) },
+                    restitution: 0.15,
+                    friction: 0.8,
+                });
+            }
         }
         w
     }
@@ -335,6 +338,11 @@ impl PhysicsWorld {
     fn solve_static_collisions(&mut self) {
         for v in &mut self.vehicles {
             for c in &self.static_colliders {
+                let delta = c.position_m - v.state.position_m;
+                let broadphase_radius = c.shape.bounding_radius() + v.collision_half_extents_m().length() + 0.5;
+                if delta.x * delta.x + delta.z * delta.z > broadphase_radius * broadphase_radius {
+                    continue;
+                }
                 if let Some((normal, penetration)) =
                     vehicle_static_contact(v.state.position_m, v.state.orientation, v.collision_half_extents_m(), c)
                 {

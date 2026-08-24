@@ -4,6 +4,7 @@
 //! and -Z vehicle-forward. All public physical values use SI units and radians.
 
 mod archive;
+pub mod circuit;
 pub mod collision;
 pub mod controls;
 pub mod feedback;
@@ -17,6 +18,7 @@ pub mod world;
 mod wasm;
 
 pub use archive::{ArchiveError, decode_input_history, encode_input_history};
+pub use circuit::{CIRCUIT_HALF_WIDTH_M, CircuitSegment};
 pub use controls::{ControlOutput, DriverAids, DriverInput};
 pub use feedback::{AudioFrame, FeedbackEvent, FeedbackEventKind, ForceFeedbackFrame};
 pub use math::{Quat, Vec3};

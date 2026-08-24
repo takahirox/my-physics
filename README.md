@@ -19,7 +19,7 @@ My Physics is a deterministic, headless-first vehicle and motorsport physics eng
 - Spatial road temperature, rubber, contamination and water state with tire interaction
 - Oriented box, capsule and convex narrow phases for vehicles, curbs and static environments
 - Dynamics-affecting deformation, wheel/suspension/aero damage and independent detached bodies
-- Ten-vehicle procedural race-straight demo with synchronized physical barriers and smoothly changing physics LOD
+- Ten-vehicle 0.72 km closed racing circuit with synchronized physical barriers, deterministic AI line following and smoothly changing physics LOD
 - Complete versioned/checksummed snapshot archives, persistent timed input history, restore and deterministic re-simulation
 - Detailed telemetry, expanded headless CSV, continuous Audio/FFB frames and discrete physical events
 - Raw WebAssembly API and rendering-independent WebGL2 3D chase-camera demo with curbs, catch fencing, grids, gantries and grandstands
@@ -34,12 +34,13 @@ cargo test --all-targets
 ./scripts/serve-web.sh
 ```
 
-Open <http://localhost:8080>. Drive with WASD or arrow keys, use Shift for the clutch, Space for the handbrake, T for automatic mode, R to reset, 1–6 to request a gear, and K/L to save/restore a snapshot. Standard gamepads and common wheel/pedal identifiers are detected through the Gamepad API; axis indices can be overridden with URL parameters such as `?steerAxis=0&throttleAxis=1&brakeAxis=2&clutchAxis=3`.
+Open <http://localhost:8080>. Drive a complete lap with WASD or arrow keys; press P to toggle the AI driver. Use Shift for the clutch, Space for the handbrake, T for automatic mode, R to reset, 1–6 to request a gear, and K/L to save/restore a snapshot. Standard gamepads and common wheel/pedal identifiers are detected through the Gamepad API; axis indices can be overridden with URL parameters such as `?steerAxis=0&throttleAxis=1&brakeAxis=2&clutchAxis=3`.
 
 For a rendering-free simulation and CSV telemetry:
 
 ```bash
 cargo run --release --bin my-physics-headless -- 10 > telemetry.csv
+cargo run --release --example circuit_lap
 ```
 
 ## Architecture

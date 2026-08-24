@@ -15,7 +15,8 @@ fn collision_world(shape: CollisionShape, position: Vec3, orientation: Quat) -> 
         restitution: 0.1,
         friction: 0.8,
     });
-    world.vehicles[0].state.position_m.x = 0.0;
+    world.vehicles[0].state.position_m = Vec3::new(0.0, 0.55, 0.0);
+    world.vehicles[0].state.orientation = Quat::IDENTITY;
     world.vehicles[0].state.linear_velocity_mps.z = -10.0;
     world
 }
