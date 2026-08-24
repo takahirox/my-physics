@@ -1,0 +1,25 @@
+[package]
+name = "my-physics"
+version = "0.1.0"
+edition = "2024"
+description = "Deterministic, headless-first vehicle and motorsport physics engine"
+repository = "https://github.com/takahirox/my-physics"
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "my-physics-headless"
+path = "src/bin/headless.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"

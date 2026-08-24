@@ -1,0 +1,4 @@
+/target/
+/web/physics.wasm
+*.csv
+.DS_Store

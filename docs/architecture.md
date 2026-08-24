@@ -1,0 +1,54 @@
+# Architecture
+
+## Invariants
+
+1. One physical foundation serves games and engineering workflows. Fidelity changes computation, never parameter meaning.
+2. Physics owns its clock. Rendering reads/interpolates states and never supplies the authoritative timestep.
+3. State transitions follow stable vehicle order and wheel order. Authoritative stepping does not use parallel reductions.
+4. Platform adapters stay outside the plant. The browser API is a thin export layer over `PhysicsWorld`.
+5. Approximation boundaries are explicit and replaceable.
+
+## Runtime flow
+
+```text
+timed driver input
+       │
+       ▼
+  ABS / TC / ESC ────── separate controller
+       │ control commands
+       ▼
+ engine ─ clutch ─ gearbox ─ open differential
+       │                         │
+       └──────────────────► wheel rotation
+                                 │
+road state ─► tire model ─► forces / moments
+                                 │
+wind ─► aero ─────────────► 6-DoF chassis
+                                 │
+                       collision / physical damage
+                                 │
+                     snapshot + telemetry + events
+```
+
+The native and WASM paths call this same flow. Non-player LOD caches expensive force evaluation for 4 or 10 base ticks while continuing rigid-body integration every 1 ms. A first-order transition over `lod_transition_s` avoids abrupt fidelity changes.
+
+## Determinism policy (v0.1)
+
+- Fixed `f64` operations, fixed iteration order and fixed timestep for authoritative runs
+- No random source in the physics step
+- No GPU computation or nondeterministic task scheduling in the authoritative path
+- Quaternion normalization every integration step
+- FNV-1a state fingerprint used by regression tests
+- Snapshots clone every authoritative world field; input frames are indexed by physics step
+
+Current tests establish repeatability on one toolchain/platform. They do not claim identical bits across all CPUs, browsers or compiler versions. v1.0 needs documented math routines, compiler flags, plugin rules and a tested determinism matrix.
+
+## Model extension seams
+
+`TireModel` is the first public replaceable physical interface. Suspension, differential, powertrain and aerodynamics are kept in clearly bounded modules/data and will receive stable traits after reference behavior is validated. Freezing all plugin interfaces in v0.1 would preserve the wrong abstractions.
+
+Vehicle definitions separate authored constants from runtime state. A later schema will add units, provenance (`measured`, `estimated`, `fitted`, `authored`), uncertainty, schema version and migration metadata.
+
+## Snapshot compatibility
+
+The current `Snapshot` is complete and deterministic within the Rust API but intentionally has no promised wire format. v0.2 will introduce versioned canonical serialization, checksums and migration tests before snapshots are used across builds or over a network.
