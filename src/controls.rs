@@ -3,6 +3,50 @@
 
 use crate::math::clamp01;
 
+/// Maximum normalized road-wheel request for a bounded dry lateral-
+/// acceleration target. This input policy does not change the physical rack.
+pub fn speed_sensitive_steering_limit(speed_mps: f64) -> f64 {
+    const WHEELBASE_M: f64 = 2.51;
+    const TARGET_LATERAL_ACCEL_MPS2: f64 = 10.5;
+    const PHYSICAL_MAX_STEER_RAD: f64 = 0.54;
+    if speed_mps <= 3.0 {
+        1.0
+    } else {
+        ((WHEELBASE_M * TARGET_LATERAL_ACCEL_MPS2 / (speed_mps * speed_mps)).atan() / PHYSICAL_MAX_STEER_RAD)
+            .clamp(0.03, 1.0)
+    }
+}
+
+/// Deterministic digital-steering adapter stepped on the physics clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KeyboardSteeringAssist {
+    output: f64,
+}
+
+impl KeyboardSteeringAssist {
+    pub fn output(&self) -> f64 {
+        self.output
+    }
+
+    pub fn reset(&mut self) {
+        self.output = 0.0;
+    }
+
+    pub fn update(&mut self, direction: f64, speed_mps: f64, dt_s: f64) -> f64 {
+        let target = direction.clamp(-1.0, 1.0) * speed_sensitive_steering_limit(speed_mps);
+        let rate_per_s = if target == 0.0 {
+            4.8
+        } else if self.output != 0.0 && target.signum() != self.output.signum() {
+            3.8
+        } else {
+            2.8
+        };
+        let delta = (target - self.output).clamp(-rate_per_s * dt_s, rate_per_s * dt_s);
+        self.output = (self.output + delta).clamp(-1.0, 1.0);
+        self.output
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DriverInput {
     pub steering: f64,

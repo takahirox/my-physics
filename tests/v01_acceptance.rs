@@ -180,7 +180,7 @@ fn quaternion_stays_normalized_during_long_steering_run() {
 #[test]
 fn lod_transition_is_smooth_and_converges() {
     let mut world = PhysicsWorld::demo(2);
-    world.vehicles[1].state.position_m.x = 100.0;
+    world.vehicles[1].state.position_m = world.vehicles[0].state.position_m + Vec3::new(100.0, 0.0, 0.0);
     let initial = world.vehicles[1].fidelity;
     world.step_fixed(1).unwrap();
     assert!((world.vehicles[1].fidelity - initial).abs() < 0.01);

@@ -15,9 +15,11 @@ The integration suite currently covers:
 | 1000 Hz priority timing | 1000 fixed steps advance both world and player exactly one second |
 | render decoupling | different render batching reaches the identical state |
 | browser motion correspondence | Chromium telemetry confirms rendered world displacement tracks physical speed while camera lag remains bounded |
-| circuit collision correspondence | WebGL road segments and barriers are generated from the same 160-segment closed spline as the Rust collision core; a remote curved barrier has a regression test |
-| complete-lap behavior | `cargo run --release --example circuit_lap` follows the shared racing line for 90 simulated seconds and requires at least one lap without leaving the track |
-| high-speed steering and ESC | full input remains effective and left/right symmetric; oversteer and opposite-yaw fixtures select physically corrective brake corners |
+| circuit collision correspondence | WebGL road segments and barriers are generated from the same 240-segment, 2.06 km closed spline as the Rust collision core; a remote curved barrier has a regression test |
+| circuit scale envelope | sampled centerline radius is required to remain at least 25 m; the current minimum is 26.41 m, corresponding to about 62 km/h at 1.15 g |
+| complete-lap behavior | `cargo run --release --example circuit_lap` requires a damage-free lap inside the safe lateral envelope and reports lap time, speed and line error |
+| keyboard steering | the physics-clock adapter is checked at 50/100/140 km/h for monotonic half/full response and less than 15 degrees peak front slip; the digital-controller lap must finish without damage |
+| high-speed steering and ESC | raw plant input remains effective and left/right symmetric; oversteer and opposite-yaw fixtures select physically corrective brake corners; the browser race preset starts with ESC off and exposes an E-key toggle |
 | longitudinal plausibility | full throttle accelerates the RWD reference car in local forward (-Z) |
 | automatic shift acceleration | a 20-second full-throttle run shifts sequentially, remains below the limiter, avoids over-rev failure and continues accelerating |
 | wet-road behavior | water reduces force and produces a non-zero hydroplaning state |
@@ -53,3 +55,5 @@ The chassis uses semi-implicit Euler integration at 1 ms, which is robust for th
 - Cross-platform determinism matrix and snapshot fuzz/property tests
 
 No claim of real-vehicle correlation is made until measured telemetry and parameter provenance are available.
+
+Detailed steering investigation and tuning iterations are recorded in [Steering and circuit validation](steering-validation.md).

@@ -25,6 +25,9 @@ addEventListener('keydown', (event) => {
   if (event.code === 'KeyP' && api && !event.repeat) {
     api.physics_set_player_autopilot(api.physics_player_autopilot() ? 0 : 1);
   }
+  if (event.code === 'KeyE' && api && !event.repeat) {
+    api.physics_set_player_esc(api.physics_player_esc() ? 0 : 1);
+  }
   if (event.code === 'KeyK' && api) {
     const bytes = api.physics_snapshot_save();
     ui.snapshotStatus.textContent = `SAVED · ${(bytes / 1024).toFixed(0)} KiB`;
@@ -54,6 +57,7 @@ class InputAdapter {
     const keyboardSteer =
       (keys.has('ArrowLeft') || keys.has('KeyA') ? -1 : 0) + (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0);
     let steer = keyboardSteer;
+    let keyboardSteering = true;
     let throttle = keys.has('ArrowUp') || keys.has('KeyW') ? 1 : 0;
     let brake = keys.has('ArrowDown') || keys.has('KeyS') ? 1 : 0;
     let clutch = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0;
@@ -64,20 +68,26 @@ class InputAdapter {
       const isWheel = /wheel|g29|g920|g923|t150|t248|t300|t500|fanatec|moza|simagic/i.test(pad.id);
       device = isWheel ? `WHEEL · ${pad.id}` : `GAMEPAD · ${pad.id}`;
       if (isWheel) {
-        if (keyboardSteer === 0) steer = this.axis(pad, 'steer', 0);
+        if (keyboardSteer === 0) {
+          steer = this.axis(pad, 'steer', 0);
+          keyboardSteering = false;
+        }
         throttle = Math.max(throttle, this.pedal(this.axis(pad, 'throttle', 1)));
         brake = Math.max(brake, this.pedal(this.axis(pad, 'brake', 2)));
         clutch = Math.max(clutch, this.pedal(this.axis(pad, 'clutch', 3)));
         handbrake = Math.max(handbrake, pad.buttons[0]?.value || 0);
       } else {
-        steer = Math.abs(pad.axes[0]) > 0.08 ? pad.axes[0] : steer;
+        if (keyboardSteer === 0) {
+          steer = Math.abs(pad.axes[0]) > 0.08 ? pad.axes[0] : 0;
+          keyboardSteering = false;
+        }
         throttle = Math.max(throttle, pad.buttons[7]?.value || 0);
         brake = Math.max(brake, pad.buttons[6]?.value || 0);
         clutch = Math.max(clutch, pad.buttons[4]?.value || 0);
         handbrake = Math.max(handbrake, pad.buttons[0]?.value || 0);
       }
     }
-    return { steer, throttle, brake, clutch, handbrake, device, pad };
+    return { steer, keyboardSteer, keyboardSteering, throttle, brake, clutch, handbrake, device, pad };
   }
 
   rumble(pad, magnitude, now) {
@@ -306,7 +316,7 @@ class Renderer3D {
       }));
     }
     const roadWidth = trackHalfWidth * 2;
-    this.box([0, -0.22, 0], [280, 0.32, 270], rgb('#18351d'));
+    this.box([0, -0.22, 0], [760, 0.32, 760], rgb('#18351d'));
 
     for (let index = 0; index < this.circuit.length; index += 1) {
       const segment = this.circuit[index];
@@ -465,14 +475,20 @@ function frame(now) {
   const input = inputAdapter.read();
   window.__MY_PHYSICS_INPUT__ = {
     steer: input.steer,
+    keyboardSteering: input.keyboardSteering,
     throttle: input.throttle,
     brake: input.brake,
     clutch: input.clutch,
     handbrake: input.handbrake,
     device: input.device,
   };
-  ui.inputDevice.textContent = api.physics_player_autopilot() ? 'AI DRIVER · P' : input.device;
-  api.physics_set_input(input.steer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
+  const escStatus = api.physics_player_esc() ? 'ESC ON' : 'ESC OFF';
+  ui.inputDevice.textContent = api.physics_player_autopilot() ? `AI DRIVER · P · ${escStatus}` : `${input.device} · ${escStatus} · E`;
+  if (input.keyboardSteering) {
+    api.physics_set_keyboard_input(input.keyboardSteer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
+  } else {
+    api.physics_set_input(input.steer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
+  }
   const steps = Math.min(Math.floor(accumulator / 0.001), 50);
   if (steps) {
     api.physics_step(steps);

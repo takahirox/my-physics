@@ -12,9 +12,9 @@ The browser performs a warm-up and a 1,000-step physics-only benchmark at startu
 
 The application/user can override this from the Quality selector. Rendering remains outside the measured physics interval.
 
-## Reference measurement — 2026-08-24
+## Reference measurement — 2026-08-25
 
-Desktop Chromium on the development Apple Silicon machine processed the final ten-vehicle, 1,000-step WASM workload in **16.7 ms (59.9× real time)**. The final acceptance gate under Node v24.12.0 measured **16.9 ms (59.1× real time)** on the same machine. Measurements are workload/hardware specific and are evidence for the v0.1 reference setup, not a universal guarantee.
+The final acceptance gate under Node v24.12.0 on the development Apple Silicon machine processed the ten-vehicle, 1,000-step WASM workload in **47.3 ms (21.2× real time)**. This includes nine deterministic AI controllers searching the 240-segment full-size circuit and collision broad phases for 480 synchronized barriers. The earlier compact 160-segment circuit measured 16.9 ms, so the fidelity/scale increase has a visible cost while retaining substantial real-time headroom. Measurements are workload/hardware specific and are evidence for the v0.1 reference setup, not a universal guarantee.
 
 Run the portable WASM measurement with:
 

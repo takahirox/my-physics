@@ -1,11 +1,11 @@
-use my_physics::circuit::segments;
+use my_physics::circuit::{ai_driver_input_with_yaw, minimum_radius_m, nearest_segment, segments, total_length_m};
 use my_physics::controls::AidSensors;
 use my_physics::road::RoadCell;
 use my_physics::tire::{TireFailure, TireState};
 use my_physics::{
-    ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverAids, DriverInput, MagicFormulaTire, PhysicsWorld, Quat,
-    SimulationConfig, Snapshot, StepError, TireInput, TireModel, VehicleDefinition, decode_input_history,
-    encode_input_history,
+    ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverAids, DriverInput, KeyboardSteeringAssist, MagicFormulaTire,
+    PhysicsWorld, Quat, SimulationConfig, Snapshot, StepError, TireInput, TireModel, VehicleDefinition,
+    decode_input_history, encode_input_history,
 };
 
 #[test]
@@ -139,6 +139,86 @@ fn full_keyboard_steering_remains_effective_and_left_right_symmetric_at_speed() 
     assert!(left_yaw > 0.45, "left_yaw={left_yaw}");
     assert!((right_yaw.abs() - left_yaw.abs()).abs() < 0.06);
     assert!(right_x > 2.5 && left_x < -2.5, "right_x={right_x}, left_x={left_x}");
+}
+
+fn assisted_steering_response(speed_mps: f64, command: f64) -> (f64, f64) {
+    let mut definition = VehicleDefinition::default();
+    definition.transmission.automatic = false;
+    let mut world = PhysicsWorld::new(SimulationConfig::default());
+    let index = world.add_vehicle(definition);
+    world.vehicles[index].state.powertrain.gear = 0;
+    world.vehicles[index].driver_aids.stability_control_enabled = false;
+    world.vehicles[index].driver_aids.traction_control_enabled = false;
+    world.step_fixed(2_000).unwrap();
+    {
+        let vehicle = &mut world.vehicles[index];
+        vehicle.state.orientation = Quat::IDENTITY;
+        vehicle.previous_orientation = Quat::IDENTITY;
+        vehicle.state.linear_velocity_mps = my_physics::Vec3::new(0.0, 0.0, -speed_mps);
+        vehicle.state.angular_velocity_rad_s = my_physics::Vec3::ZERO;
+        for (wheel, definition) in vehicle.state.wheels.iter_mut().zip(vehicle.definition.wheels.iter()) {
+            wheel.angular_velocity_rad_s = speed_mps / definition.radius_m;
+        }
+    }
+    let mut assist = KeyboardSteeringAssist::default();
+    let mut maximum_front_slip_rad: f64 = 0.0;
+    let start_yaw = yaw_radians(world.vehicles[index].state.orientation);
+    for _ in 0..1_000 {
+        let steering = assist.update(command, world.vehicles[index].telemetry.speed_mps, 0.001);
+        world.set_input_unrecorded(index, DriverInput { steering, ..DriverInput::default() }).unwrap();
+        world.step_fixed(1).unwrap();
+        maximum_front_slip_rad = maximum_front_slip_rad.max(
+            world.vehicles[index].state.wheels[..2].iter().map(|wheel| wheel.slip_angle_rad.abs()).fold(0.0, f64::max),
+        );
+    }
+    ((yaw_radians(world.vehicles[index].state.orientation) - start_yaw).abs(), maximum_front_slip_rad)
+}
+
+#[test]
+fn assisted_keyboard_response_is_monotonic_and_avoids_extreme_slip() {
+    for speed_kmh in [50.0, 100.0, 140.0] {
+        let half = assisted_steering_response(speed_kmh / 3.6, 0.5);
+        let full = assisted_steering_response(speed_kmh / 3.6, 1.0);
+        assert!(full.0 > half.0 * 1.5, "speed={speed_kmh}, half={}, full={}", half.0, full.0);
+        assert!(full.1 < 15.0_f64.to_radians(), "speed={speed_kmh}, slip={}", full.1.to_degrees());
+    }
+}
+
+#[test]
+fn digital_keyboard_controller_completes_full_size_circuit_without_damage() {
+    assert!((1_500.0..2_200.0).contains(&total_length_m()));
+    assert!(minimum_radius_m() >= 25.0);
+    let mut world = PhysicsWorld::demo(1);
+    let mut assist = KeyboardSteeringAssist::default();
+    let mut previous = nearest_segment(world.vehicles[0].state.position_m);
+    let mut laps = 0;
+    let mut maximum_lateral_error_m: f64 = 0.0;
+    for _ in 0..110_000 {
+        let vehicle = &world.vehicles[0];
+        let mut input = ai_driver_input_with_yaw(
+            vehicle.state.position_m,
+            vehicle.state.orientation,
+            vehicle.telemetry.speed_mps,
+            vehicle.telemetry.yaw_rate_rad_s,
+            0.0,
+        );
+        let direction = if input.steering.abs() > 0.02 { input.steering.signum() } else { 0.0 };
+        input.steering = assist.update(direction, vehicle.telemetry.speed_mps, 0.001);
+        world.set_input_unrecorded(0, input).unwrap();
+        world.step_fixed(1).unwrap();
+        let vehicle = &world.vehicles[0];
+        let segment_index = nearest_segment(vehicle.state.position_m);
+        let segment = segments()[segment_index];
+        maximum_lateral_error_m =
+            maximum_lateral_error_m.max(((vehicle.state.position_m - segment.center_m).dot(segment.right)).abs());
+        if previous > segments().len() * 4 / 5 && segment_index < segments().len() / 5 {
+            laps += 1;
+        }
+        previous = segment_index;
+    }
+    assert!(laps >= 1);
+    assert!(maximum_lateral_error_m < DEMO_TRACK_HALF_WIDTH_M - 1.2, "error={maximum_lateral_error_m}");
+    assert_eq!(world.vehicles[0].state.damage.body, 0.0);
 }
 
 #[test]

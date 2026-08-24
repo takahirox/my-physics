@@ -128,9 +128,16 @@ impl PhysicsWorld {
     }
     pub fn demo(vehicle_count: usize) -> Self {
         let mut w = Self::new(SimulationConfig::default());
+        // Bound the dynamic-road cell count while covering the full-size
+        // circuit and its barriers (720 m square at 4.5 m resolution).
+        w.road = DynamicRoad::new(160, 160, 4.5);
         let circuit = circuit::segments();
         for n in 0..vehicle_count {
             let mut v = Vehicle::new(VehicleDefinition::default());
+            // The circuit demo uses a race preset. ESC remains implemented and
+            // can be enabled by applications, but is not allowed to fight rapid
+            // driver-requested direction changes by default.
+            v.driver_aids.stability_control_enabled = false;
             let row = n / 2;
             let segment = circuit[(circuit.len() + circuit.len() - row * 2) % circuit.len()];
             let lateral = if n % 2 == 0 { -1.55 } else { 1.55 };

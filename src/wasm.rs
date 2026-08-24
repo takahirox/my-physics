@@ -3,13 +3,25 @@
 //! default unsafe-code lint; no unsafe block or pointer access is used.
 #![allow(unsafe_code)]
 
-use crate::{DriverInput, Fidelity, PhysicsWorld, Quat, Snapshot};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::{DriverInput, Fidelity, KeyboardSteeringAssist, PhysicsWorld, Quat, Snapshot};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 static DEMO: OnceLock<Mutex<PhysicsWorld>> = OnceLock::new();
 static SAVED_SNAPSHOT: OnceLock<Mutex<Option<Snapshot>>> = OnceLock::new();
 static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
+static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
+static KEYBOARD: OnceLock<Mutex<KeyboardInputState>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Default)]
+struct KeyboardInputState {
+    assist: KeyboardSteeringAssist,
+    command: DriverInput,
+}
+
+fn keyboard() -> &'static Mutex<KeyboardInputState> {
+    KEYBOARD.get_or_init(|| Mutex::new(KeyboardInputState::default()))
+}
 fn demo() -> &'static Mutex<PhysicsWorld> {
     DEMO.get_or_init(|| Mutex::new(PhysicsWorld::demo(10)))
 }
@@ -31,25 +43,51 @@ fn yaw(q: Quat) -> f64 {
 pub extern "C" fn physics_reset() {
     with_world(|w| *w = PhysicsWorld::demo(10));
     PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
+    PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
+    *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = KeyboardInputState::default();
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_set_input(steering: f64, throttle: f64, brake: f64, clutch: f64, handbrake: f64, gear: i32) {
+    PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
+    keyboard().lock().unwrap_or_else(|error| error.into_inner()).assist.reset();
     with_world(|w| {
         let _ = w.set_input(0, DriverInput { steering, throttle, brake, clutch, handbrake, gear_request: gear as i8 });
     });
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn physics_set_keyboard_input(
+    direction: f64,
+    throttle: f64,
+    brake: f64,
+    clutch: f64,
+    handbrake: f64,
+    gear: i32,
+) {
+    PLAYER_INPUT_MODE.store(1, Ordering::Relaxed);
+    let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+    state.command =
+        DriverInput { steering: direction, throttle, brake, clutch, handbrake, gear_request: gear as i8 }.sanitized();
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn physics_step(steps: u32) {
     with_world(|w| {
         for _ in 0..steps {
+            if !PLAYER_AUTOPILOT.load(Ordering::Relaxed) && PLAYER_INPUT_MODE.load(Ordering::Relaxed) == 1 {
+                let speed = w.vehicles.first().map_or(0.0, |vehicle| vehicle.telemetry.speed_mps);
+                let mut keyboard = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+                let command = keyboard.command;
+                let steering = keyboard.assist.update(command.steering, speed, w.config.fixed_dt_s);
+                let _ = w.set_input_unrecorded(0, DriverInput { steering, ..command });
+            }
             let ai_start = if PLAYER_AUTOPILOT.load(Ordering::Relaxed) { 0 } else { 1 };
             for n in ai_start..w.vehicles.len() {
                 let vehicle = &w.vehicles[n];
                 let lane = if n % 2 == 0 { -0.35 } else { 0.35 };
-                let input = crate::circuit::ai_driver_input(
+                let input = crate::circuit::ai_driver_input_with_yaw(
                     vehicle.state.position_m,
                     vehicle.state.orientation,
                     vehicle.telemetry.speed_mps,
+                    vehicle.telemetry.yaw_rate_rad_s,
                     lane,
                 );
                 let _ = w.set_input_unrecorded(n, input);
@@ -99,6 +137,23 @@ pub extern "C" fn physics_track_progress(index: u32) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_set_player_autopilot(enabled: u32) {
     PLAYER_AUTOPILOT.store(enabled != 0, Ordering::Relaxed);
+    if enabled != 0 {
+        keyboard().lock().unwrap_or_else(|error| error.into_inner()).assist.reset();
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_set_player_esc(enabled: u32) {
+    with_world(|world| {
+        if let Some(vehicle) = world.vehicles.first_mut() {
+            vehicle.driver_aids.stability_control_enabled = enabled != 0;
+        }
+    });
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_player_esc() -> u32 {
+    with_world(|world| {
+        u32::from(world.vehicles.first().is_some_and(|vehicle| vehicle.driver_aids.stability_control_enabled))
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_player_autopilot() -> u32 {

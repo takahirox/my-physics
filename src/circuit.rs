@@ -1,16 +1,20 @@
 //! Shared deterministic geometry for the v0.1 demonstration circuit.
 
-use crate::controls::DriverInput;
+use crate::controls::{DriverInput, speed_sensitive_steering_limit};
 use crate::math::{Quat, Vec3};
 use std::sync::OnceLock;
 
-pub const CIRCUIT_SEGMENT_COUNT: usize = 160;
+pub const CIRCUIT_SEGMENT_COUNT: usize = 240;
 pub const CIRCUIT_HALF_WIDTH_M: f64 = 5.6;
+/// The original control polygon was authored as a compact visual prototype.
+/// Keeping the scale explicit makes the sampled racing geometry suitable for
+/// full-size cars without changing its recognizable sequence of corners.
+pub const CIRCUIT_SCALE: f64 = 2.8;
 
 const CONTROL_POINTS: [(f64, f64); 16] = [
-    (10.0, -92.0),
-    (-35.0, -92.0),
-    (-78.0, -72.0),
+    (30.0, -92.0),
+    (-50.0, -92.0),
+    (-90.0, -82.0),
     (-108.0, -38.0),
     (-112.0, 5.0),
     (-92.0, 48.0),
@@ -23,7 +27,7 @@ const CONTROL_POINTS: [(f64, f64); 16] = [
     (116.0, 15.0),
     (92.0, -18.0),
     (110.0, -58.0),
-    (62.0, -88.0),
+    (75.0, -92.0),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,6 +41,8 @@ pub struct CircuitSegment {
 }
 
 static SEGMENTS: OnceLock<Vec<CircuitSegment>> = OnceLock::new();
+static LOCAL_RADII: OnceLock<Vec<f64>> = OnceLock::new();
+static AI_CORNER_SPEEDS: OnceLock<Vec<f64>> = OnceLock::new();
 
 pub fn segments() -> &'static [CircuitSegment] {
     SEGMENTS.get_or_init(build_segments)
@@ -45,6 +51,60 @@ pub fn segments() -> &'static [CircuitSegment] {
 pub fn total_length_m() -> f64 {
     let list = segments();
     list.last().map_or(0.0, |segment| segment.distance_m + segment.length_m)
+}
+
+/// Polyline approximation of the centerline radius at a sampled segment.
+/// Infinite radius denotes a locally straight section.
+pub fn local_radius_m(index: usize) -> f64 {
+    let radii = LOCAL_RADII.get_or_init(build_local_radii);
+    radii[index % radii.len()]
+}
+
+fn build_local_radii() -> Vec<f64> {
+    let list = segments();
+    (0..list.len())
+        .map(|index| {
+            let current = list[index];
+            let previous = list[(index + list.len() - 1) % list.len()];
+            let turn_rad = previous.forward.dot(current.forward).clamp(-1.0, 1.0).acos();
+            if turn_rad <= 1.0e-9 { f64::INFINITY } else { (previous.length_m + current.length_m) * 0.5 / turn_rad }
+        })
+        .collect()
+}
+
+pub fn minimum_radius_m() -> f64 {
+    (0..segments().len()).map(local_radius_m).fold(f64::INFINITY, f64::min)
+}
+
+fn ai_corner_speed_mps(index: usize) -> f64 {
+    let speeds = AI_CORNER_SPEEDS.get_or_init(build_ai_corner_speeds);
+    speeds[index % speeds.len()]
+}
+
+fn build_ai_corner_speeds() -> Vec<f64> {
+    let list = segments();
+    (0..list.len())
+        .map(|index| {
+            let mut positive_turn = 0.0;
+            let mut negative_turn = 0.0;
+            for offset in 0..=12 {
+                let current = list[(index + offset) % list.len()];
+                let next = list[(index + offset + 1) % list.len()];
+                let signed_turn = current.forward.cross(next.forward).y.atan2(current.forward.dot(next.forward));
+                if signed_turn >= 0.0 {
+                    positive_turn += signed_turn;
+                } else {
+                    negative_turn -= signed_turn;
+                }
+            }
+            let steady_corner_speed = (local_radius_m(index) * 3.5).sqrt().clamp(13.0, 40.0);
+            if positive_turn > 0.035 && negative_turn > 0.035 {
+                steady_corner_speed.min(27.5)
+            } else {
+                steady_corner_speed
+            }
+        })
+        .collect()
 }
 
 pub fn nearest_segment(position_m: Vec3) -> usize {
@@ -58,9 +118,19 @@ pub fn nearest_segment(position_m: Vec3) -> usize {
 }
 
 pub fn ai_driver_input(position_m: Vec3, orientation: Quat, speed_mps: f64, lane_offset_m: f64) -> DriverInput {
+    ai_driver_input_with_yaw(position_m, orientation, speed_mps, 0.0, lane_offset_m)
+}
+
+pub fn ai_driver_input_with_yaw(
+    position_m: Vec3,
+    orientation: Quat,
+    speed_mps: f64,
+    yaw_rate_rad_s: f64,
+    lane_offset_m: f64,
+) -> DriverInput {
     let list = segments();
     let nearest = nearest_segment(position_m);
-    let lookahead_m = 7.0 + speed_mps.max(0.0) * 0.3;
+    let lookahead_m = 20.0 + speed_mps.max(0.0) * 0.8;
     let step_m = (total_length_m() / list.len() as f64).max(1.0);
     let lookahead = (lookahead_m / step_m).round().max(2.0) as usize;
     let target_segment = list[(nearest + lookahead) % list.len()];
@@ -71,14 +141,23 @@ pub fn ai_driver_input(position_m: Vec3, orientation: Quat, speed_mps: f64, lane
     let forward = orientation.rotate(Vec3::FORWARD);
     let heading_error = forward.cross(desired).y.atan2(forward.dot(desired));
 
-    let curve_a = list[(nearest + lookahead) % list.len()].forward;
-    let curve_b = list[(nearest + lookahead + 7) % list.len()].forward;
-    let turn_angle = curve_a.dot(curve_b).clamp(-1.0, 1.0).acos();
-    let target_speed = (31.0 - turn_angle * 55.0).clamp(10.0, 31.0);
+    // Preview enough centerline to brake before the next corner. Target speed
+    // follows a conservative lateral-acceleration envelope instead of being
+    // tied to the number of spline samples or the old compact circuit scale.
+    let preview_segments = ((220.0 / step_m).ceil() as usize).max(12);
+    let target_speed = (0..=lookahead + preview_segments)
+        .map(|offset| {
+            let corner_speed = ai_corner_speed_mps(nearest + offset);
+            let braking_distance_m = offset as f64 * step_m;
+            (corner_speed * corner_speed + 2.0 * 4.5 * braking_distance_m).sqrt().min(40.0)
+        })
+        .fold(40.0, f64::min);
     let speed_error = target_speed - speed_mps;
 
+    let steering_limit = speed_sensitive_steering_limit(speed_mps);
     DriverInput {
-        steering: (-heading_error * 2.0 - lateral_error_m * 0.24).clamp(-1.0, 1.0),
+        steering: (-heading_error * 2.0 - lateral_error_m * 0.24 + yaw_rate_rad_s * 0.28)
+            .clamp(-steering_limit, steering_limit),
         throttle: (0.34 + speed_error * 0.075).clamp(0.0, 0.82),
         brake: (-speed_error * 0.11).clamp(0.0, 0.8),
         ..DriverInput::default()
@@ -118,7 +197,7 @@ fn build_segments() -> Vec<CircuitSegment> {
 }
 
 fn point((x, z): (f64, f64)) -> Vec3 {
-    Vec3::new(x, 0.0, z)
+    Vec3::new(x * CIRCUIT_SCALE, 0.0, z * CIRCUIT_SCALE)
 }
 
 fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f64) -> Vec3 {
@@ -139,12 +218,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn circuit_is_closed_and_f1_sized() {
+    fn circuit_is_closed_and_full_size() {
         let list = segments();
         assert_eq!(list.len(), CIRCUIT_SEGMENT_COUNT);
-        assert!((550.0..850.0).contains(&total_length_m()));
+        assert!((1_500.0..2_200.0).contains(&total_length_m()));
+        assert!(minimum_radius_m() >= 25.0, "minimum radius {}", minimum_radius_m());
+        let minimum_corner_speed_kmh = (minimum_radius_m() * 1.15 * 9.80665).sqrt() * 3.6;
+        assert!(minimum_corner_speed_kmh >= 60.0, "corner speed {minimum_corner_speed_kmh}");
         let closure = (list[0].center_m - list[list.len() - 1].center_m).length();
-        assert!(closure < 8.0, "closure gap {closure}");
+        assert!(closure < total_length_m() / list.len() as f64 * 1.5, "closure gap {closure}");
         assert!(list.iter().all(|segment| (segment.forward.length() - 1.0).abs() < 1.0e-9));
     }
 
