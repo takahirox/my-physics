@@ -17,3 +17,5 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
       - run: cargo build --release --target wasm32-unknown-unknown --lib
+      - run: cp target/wasm32-unknown-unknown/release/my_physics.wasm web/physics.wasm
+      - run: node scripts/benchmark-wasm.mjs

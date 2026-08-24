@@ -75,6 +75,12 @@ impl Default for DriverAids {
 }
 
 impl DriverAids {
+    pub(crate) fn integrator(&self) -> f64 {
+        self.tc_integrator
+    }
+    pub(crate) fn set_integrator(&mut self, value: f64) {
+        self.tc_integrator = value.clamp(0.0, 0.5);
+    }
     pub fn update(&mut self, input: DriverInput, s: AidSensors, dt: f64) -> ControlOutput {
         let i = input.sanitized();
         let mut out = ControlOutput {

@@ -1,4 +1,5 @@
 use crate::controls::{AidSensors, ControlOutput, DriverAids, DriverInput};
+use crate::feedback::{AudioFrame, FeedbackEvent, FeedbackEventKind, ForceFeedbackFrame};
 use crate::math::{Quat, Vec3, clamp01};
 use crate::tire::{MagicFormulaTire, TireInput, TireModel, TireOutput, TireState};
 
@@ -183,6 +184,8 @@ pub struct PowertrainState {
     pub clutch_temperature_k: f64,
     pub clutch_wear: f64,
     pub gearbox_wear: f64,
+    pub clutch_failed: bool,
+    pub gearbox_failed: bool,
     pub fuel_kg: f64,
     pub engine_temperature_k: f64,
     pub oil_temperature_k: f64,
@@ -205,6 +208,8 @@ impl Default for PowertrainState {
             clutch_temperature_k: 320.0,
             clutch_wear: 0.0,
             gearbox_wear: 0.0,
+            clutch_failed: false,
+            gearbox_failed: false,
             fuel_kg: 40.0,
             engine_temperature_k: 350.0,
             oil_temperature_k: 345.0,
@@ -266,6 +271,9 @@ pub struct Telemetry {
     pub fuel_kg: f64,
     pub engine_temperature_k: f64,
     pub oil_pressure_pa: f64,
+    pub clutch_temperature_k: f64,
+    pub clutch_wear: f64,
+    pub gearbox_wear: f64,
     pub wheel_slip: [f64; 4],
     pub tire_temperature_k: [f64; 4],
     pub tire_pressure_pa: [f64; 4],
@@ -280,6 +288,12 @@ pub struct Telemetry {
     pub fidelity: f64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InterpolatedState {
+    pub position_m: Vec3,
+    pub orientation: Quat,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Vehicle {
     pub definition: VehicleDefinition,
@@ -290,8 +304,18 @@ pub struct Vehicle {
     pub telemetry: Telemetry,
     pub fidelity: f64,
     pub target_fidelity: f64,
+    pub previous_position_m: Vec3,
+    pub previous_orientation: Quat,
+    pub audio: AudioFrame,
+    pub force_feedback: ForceFeedbackFrame,
+    pub events: Vec<FeedbackEvent>,
     pub(crate) cached_force: Vec3,
     pub(crate) cached_torque: Vec3,
+    pub(crate) previous_gear: i8,
+    pub(crate) previous_tire_failures: [crate::tire::TireFailure; 4],
+    pub(crate) previous_engine_failed: bool,
+    pub(crate) previous_clutch_failed: bool,
+    pub(crate) previous_gearbox_failed: bool,
 }
 
 impl Vehicle {
@@ -305,8 +329,18 @@ impl Vehicle {
             telemetry: Telemetry::default(),
             fidelity: 1.0,
             target_fidelity: 1.0,
+            previous_position_m: Vec3::new(0.0, 0.55, 0.0),
+            previous_orientation: Quat::IDENTITY,
+            audio: AudioFrame::default(),
+            force_feedback: ForceFeedbackFrame::default(),
+            events: Vec::new(),
             cached_force: Vec3::ZERO,
             cached_torque: Vec3::ZERO,
+            previous_gear: 1,
+            previous_tire_failures: [crate::tire::TireFailure::Healthy; 4],
+            previous_engine_failed: false,
+            previous_clutch_failed: false,
+            previous_gearbox_failed: false,
         }
     }
     pub fn mass_kg(&self) -> f64 {
@@ -317,6 +351,31 @@ impl Vehicle {
         (self.definition.chassis.cg_local_m * dry + self.definition.fuel_tank_local_m * self.state.powertrain.fuel_kg)
             / (dry + self.state.powertrain.fuel_kg).max(1.0)
             + self.state.damage.deformation_local_m
+    }
+    pub fn inertia_kg_m2(&self) -> Vec3 {
+        let detached_fraction =
+            (self.state.damage.detached_mass_kg / self.definition.chassis.dry_mass_kg).clamp(0.0, 0.2);
+        let mut inertia = self.definition.chassis.inertia_kg_m2 * (1.0 - detached_fraction);
+        let fuel_offset = self.definition.fuel_tank_local_m - self.cg_local_m();
+        inertia.x += self.state.powertrain.fuel_kg * (fuel_offset.y * fuel_offset.y + fuel_offset.z * fuel_offset.z);
+        inertia.y += self.state.powertrain.fuel_kg * (fuel_offset.x * fuel_offset.x + fuel_offset.z * fuel_offset.z);
+        inertia.z += self.state.powertrain.fuel_kg * (fuel_offset.x * fuel_offset.x + fuel_offset.y * fuel_offset.y);
+        let deformation = self.state.damage.deformation_local_m.length();
+        inertia * (1.0 - 0.12 * self.state.damage.body + 0.04 * deformation).clamp(0.65, 1.1)
+    }
+    pub fn collision_half_extents_m(&self) -> Vec3 {
+        Vec3::new(
+            0.95 * (1.0 - 0.08 * self.state.damage.body),
+            0.70 * (1.0 - 0.12 * self.state.damage.body),
+            2.15 * (1.0 - 0.22 * self.state.damage.body),
+        )
+    }
+    pub fn interpolated_state(&self, alpha: f64) -> InterpolatedState {
+        let alpha = clamp01(alpha);
+        InterpolatedState {
+            position_m: self.previous_position_m.lerp(self.state.position_m, alpha),
+            orientation: self.previous_orientation.nlerp(self.state.orientation, alpha),
+        }
     }
     pub fn sensors(&self) -> AidSensors {
         AidSensors {
@@ -378,7 +437,11 @@ impl Vehicle {
         } else {
             self.control.gear_request
         };
-        if automatic_request != 0 && automatic_request != p.gear && p.shift_timer_s <= 0.0 {
+        if p.gearbox_failed {
+            p.gear = 0;
+        } else if automatic_request != 0 && automatic_request != p.gear && p.shift_timer_s <= 0.0 {
+            let shift_severity = ((p.engine_rpm - 3_500.0).abs() / 5_000.0).clamp(0.0, 1.0);
+            p.gearbox_wear = (p.gearbox_wear + 2.0e-6 + shift_severity * 4.0e-6).clamp(0.0, 1.0);
             p.shift_timer_s = d.transmission.shift_time_s;
             p.gear = automatic_request;
         }
@@ -403,7 +466,8 @@ impl Vehicle {
             * ratio.abs();
         let engine_omega = p.engine_rpm * core::f64::consts::TAU / 60.0;
         let slip = engine_omega - driven_omega;
-        let clutch_capacity = d.transmission.clutch_capacity_nm * (1.0 - p.clutch_wear * 0.8) * p.clutch_engagement;
+        let clutch_health = if p.clutch_failed { 0.0 } else { 1.0 - p.clutch_wear * 0.8 };
+        let clutch_capacity = d.transmission.clutch_capacity_nm * clutch_health * p.clutch_engagement;
         let clutch_torque =
             (slip * d.transmission.clutch_stiffness_nm_per_rad_s).clamp(-clutch_capacity, clutch_capacity);
         let engine_torque = {
@@ -431,6 +495,9 @@ impl Vehicle {
         p.clutch_wear = (p.clutch_wear
             + slip_power * 2.2e-10 * dt * (1.0 + ((p.clutch_temperature_k - 520.0) / 100.0).max(0.0)))
         .clamp(0.0, 1.0);
+        p.gearbox_wear = (p.gearbox_wear + wheel_torque.abs() * 1.0e-12 * dt).clamp(0.0, 1.0);
+        p.clutch_failed = p.clutch_wear >= 1.0;
+        p.gearbox_failed = p.gearbox_wear >= 1.0;
         let fuel_power = (engine_torque * new_omega).max(0.0) / d.engine.efficiency.max(0.05);
         p.fuel_kg = (p.fuel_kg - fuel_power / d.engine.fuel_energy_j_kg * dt).max(0.0);
         p.engine_temperature_k +=
@@ -464,6 +531,9 @@ impl Vehicle {
             fuel_kg: s.powertrain.fuel_kg,
             engine_temperature_k: s.powertrain.engine_temperature_k,
             oil_pressure_pa: s.powertrain.oil_pressure_pa,
+            clutch_temperature_k: s.powertrain.clutch_temperature_k,
+            clutch_wear: s.powertrain.clutch_wear,
+            gearbox_wear: s.powertrain.gearbox_wear,
             wheel_slip: s.wheels.map(|w| w.longitudinal_slip),
             tire_temperature_k: s.wheels.map(|w| w.tire.tread_temperature_k),
             tire_pressure_pa: s.wheels.map(|w| w.tire.pressure_pa),
@@ -477,6 +547,68 @@ impl Vehicle {
             body_damage: s.damage.body,
             fidelity: self.fidelity,
         };
+        self.update_feedback();
+    }
+
+    fn update_feedback(&mut self) {
+        let s = &self.state;
+        let front_aligning =
+            s.wheels[0].last_tire_output.aligning_moment_nm + s.wheels[1].last_tire_output.aligning_moment_nm;
+        let scrub = s.wheels.map(|wheel| (wheel.longitudinal_slip.abs() + wheel.slip_angle_rad.abs()).clamp(0.0, 1.0));
+        let suspension = s.wheels.map(|wheel| {
+            ((wheel.suspension_compression_m - wheel.previous_compression_m).abs() / 0.02).clamp(0.0, 1.0)
+        });
+        self.audio = AudioFrame {
+            engine_rpm: s.powertrain.engine_rpm,
+            engine_load: s.powertrain.throttle_actual,
+            intake: s.powertrain.throttle_actual.sqrt(),
+            exhaust: (s.powertrain.engine_rpm / self.definition.engine.redline_rpm * s.powertrain.throttle_actual)
+                .clamp(0.0, 1.2),
+            tire_scrub: scrub,
+            road_noise: s.wheels.map(|wheel| (wheel.angular_velocity_rad_s.abs() * 0.015).clamp(0.0, 1.0)),
+            suspension_activity: suspension,
+            wind: (s.linear_velocity_mps.length() / 70.0).clamp(0.0, 1.0),
+            impact: self.audio.impact * 0.82,
+        };
+        self.force_feedback = ForceFeedbackFrame {
+            steering_torque_nm: (front_aligning * 0.018).clamp(-18.0, 18.0),
+            aligning_moment_nm: front_aligning,
+            rack_force_n: (front_aligning / 0.075).clamp(-12_000.0, 12_000.0),
+            road_vibration: suspension[0].max(suspension[1]),
+            tire_scrub: scrub[0].max(scrub[1]),
+            abs_pulse: if self.control.abs_active.iter().any(|active| *active) { 1.0 } else { 0.0 },
+            impact: self.force_feedback.impact * 0.78,
+        };
+        if s.powertrain.gear != self.previous_gear {
+            self.events.push(FeedbackEvent {
+                time_s: s.simulation_time_s,
+                kind: FeedbackEventKind::GearShift,
+                magnitude: 1.0,
+                wheel: None,
+            });
+            self.previous_gear = s.powertrain.gear;
+        }
+        for (index, wheel) in s.wheels.iter().enumerate() {
+            if wheel.tire.failure != self.previous_tire_failures[index] {
+                self.events.push(FeedbackEvent {
+                    time_s: s.simulation_time_s,
+                    kind: FeedbackEventKind::TireFailure,
+                    magnitude: wheel.tire.carcass_damage.max(0.25),
+                    wheel: Some(index as u8),
+                });
+                self.previous_tire_failures[index] = wheel.tire.failure;
+            }
+        }
+        for (failed, previous, kind) in [
+            (s.powertrain.failed, &mut self.previous_engine_failed, FeedbackEventKind::EngineFailure),
+            (s.powertrain.clutch_failed, &mut self.previous_clutch_failed, FeedbackEventKind::ClutchFailure),
+            (s.powertrain.gearbox_failed, &mut self.previous_gearbox_failed, FeedbackEventKind::GearboxFailure),
+        ] {
+            if failed && !*previous {
+                self.events.push(FeedbackEvent { time_s: s.simulation_time_s, kind, magnitude: 1.0, wheel: None });
+            }
+            *previous = failed;
+        }
     }
 }
 

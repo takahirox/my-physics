@@ -1,6 +1,6 @@
-use crate::collision::{CollisionShape, DetachedBody, StaticCollider, vehicle_planar_contact};
+use crate::collision::{CollisionShape, DetachedBody, StaticCollider, oriented_box_contact, vehicle_static_contact};
 use crate::controls::DriverInput;
-use crate::math::{Quat, Vec3, clamp01};
+use crate::math::{Quat, Vec3, clamp01, semi_implicit_linear_step};
 use crate::road::DynamicRoad;
 use crate::tire::{MagicFormulaTire, TireInput};
 use crate::vehicle::{Vehicle, VehicleDefinition, evaluate_tire};
@@ -12,7 +12,7 @@ pub enum Fidelity {
     High,
 }
 impl Fidelity {
-    fn scalar(self) -> f64 {
+    pub fn scalar(self) -> f64 {
         match self {
             Self::Low => 0.25,
             Self::Medium => 0.6,
@@ -29,6 +29,7 @@ pub struct SimulationConfig {
     pub lod_transition_s: f64,
     pub player_vehicle: usize,
     pub automatic_lod: bool,
+    pub fidelity_ceiling: Fidelity,
 }
 impl Default for SimulationConfig {
     fn default() -> Self {
@@ -39,6 +40,7 @@ impl Default for SimulationConfig {
             lod_transition_s: 0.5,
             player_vehicle: 0,
             automatic_lod: true,
+            fidelity_ceiling: Fidelity::High,
         }
     }
 }
@@ -59,15 +61,16 @@ pub struct InputFrame {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
-    config: SimulationConfig,
-    time_s: f64,
-    step: u64,
-    road: DynamicRoad,
-    wind_mps: Vec3,
-    rain_rate_m_s: f64,
-    vehicles: Vec<Vehicle>,
-    static_colliders: Vec<StaticCollider>,
-    detached_bodies: Vec<DetachedBody>,
+    pub(crate) config: SimulationConfig,
+    pub(crate) time_s: f64,
+    pub(crate) step: u64,
+    pub(crate) road: DynamicRoad,
+    pub(crate) wind_mps: Vec3,
+    pub(crate) rain_rate_m_s: f64,
+    pub(crate) vehicles: Vec<Vehicle>,
+    pub(crate) static_colliders: Vec<StaticCollider>,
+    pub(crate) detached_bodies: Vec<DetachedBody>,
+    pub(crate) tire_model: MagicFormulaTire,
 }
 
 impl Snapshot {
@@ -79,6 +82,12 @@ impl Snapshot {
     }
     pub fn fingerprint(&self) -> u64 {
         fingerprint_snapshot(self)
+    }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        crate::archive::encode_snapshot(self)
+    }
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::archive::ArchiveError> {
+        crate::archive::decode_snapshot(bytes)
     }
 }
 
@@ -135,11 +144,30 @@ impl PhysicsWorld {
             restitution: 0.15,
             friction: 0.8,
         });
+        for x in [-6.55, 6.55] {
+            w.static_colliders.push(StaticCollider {
+                position_m: Vec3::new(x, 0.09, -25.0),
+                orientation: Quat::IDENTITY,
+                shape: CollisionShape::Box { half_extents_m: Vec3::new(0.35, 0.09, 60.0) },
+                restitution: 0.05,
+                friction: 0.95,
+            });
+        }
         w
     }
     pub fn add_vehicle(&mut self, definition: VehicleDefinition) -> usize {
         self.vehicles.push(Vehicle::new(definition));
         self.vehicles.len() - 1
+    }
+    pub fn set_fidelity_ceiling(&mut self, fidelity: Fidelity) {
+        self.config.fidelity_ceiling = fidelity;
+    }
+    pub fn set_vehicle_fidelity(&mut self, index: usize, fidelity: Fidelity) -> Result<(), StepError> {
+        let Some(vehicle) = self.vehicles.get_mut(index) else {
+            return Err(StepError::VehicleIndex);
+        };
+        vehicle.target_fidelity = fidelity.scalar();
+        Ok(())
     }
     pub fn set_input(&mut self, index: usize, input: DriverInput) -> Result<(), StepError> {
         let Some(v) = self.vehicles.get_mut(index) else {
@@ -180,6 +208,7 @@ impl PhysicsWorld {
             vehicles: self.vehicles.clone(),
             static_colliders: self.static_colliders.clone(),
             detached_bodies: self.detached_bodies.clone(),
+            tire_model: self.tire_model,
         }
     }
     pub fn restore(&mut self, s: &Snapshot) {
@@ -192,6 +221,7 @@ impl PhysicsWorld {
         self.vehicles = s.vehicles.clone();
         self.static_colliders = s.static_colliders.clone();
         self.detached_bodies = s.detached_bodies.clone();
+        self.tire_model = s.tire_model;
         self.recorded_inputs.clear();
     }
     pub fn replay_from(&mut self, snapshot: &Snapshot, inputs: &[InputFrame], end_step: u64) -> Result<(), StepError> {
@@ -215,6 +245,9 @@ impl PhysicsWorld {
         self.update_lod(dt);
         self.road.update_weather(self.rain_rate_m_s, dt);
         for n in 0..self.vehicles.len() {
+            self.vehicles[n].events.clear();
+            self.vehicles[n].previous_position_m = self.vehicles[n].state.position_m;
+            self.vehicles[n].previous_orientation = self.vehicles[n].state.orientation;
             let stride = if n == self.config.player_vehicle || self.vehicles[n].fidelity > 0.8 {
                 1
             } else if self.vehicles[n].fidelity > 0.45 {
@@ -260,7 +293,7 @@ impl PhysicsWorld {
                 } else {
                     Fidelity::Low
                 };
-                v.target_fidelity = q.scalar();
+                v.target_fidelity = q.scalar().min(self.config.fidelity_ceiling.scalar());
             }
             v.fidelity += (v.target_fidelity - v.fidelity) * clamp01(dt / self.config.lod_transition_s.max(dt));
         }
@@ -273,11 +306,13 @@ impl PhysicsWorld {
                 let vb = &mut right[0];
                 let delta = vb.state.position_m - va.state.position_m;
                 if delta.y.abs() < 1.8
-                    && let Some((normal, penetration)) = vehicle_planar_contact(
+                    && let Some((normal, penetration)) = oriented_box_contact(
                         va.state.position_m,
                         va.state.orientation,
+                        va.collision_half_extents_m(),
                         vb.state.position_m,
                         vb.state.orientation,
+                        vb.collision_half_extents_m(),
                     )
                 {
                     let rel = (vb.state.linear_velocity_mps - va.state.linear_velocity_mps).dot(normal);
@@ -288,8 +323,8 @@ impl PhysicsWorld {
                         va.state.linear_velocity_mps -= normal * (impulse * inv_a);
                         vb.state.linear_velocity_mps += normal * (impulse * inv_b);
                         let energy = 0.5 * impulse * (-rel);
-                        apply_impact_damage(va, energy);
-                        apply_impact_damage(vb, energy);
+                        apply_impact_damage(va, energy, -normal);
+                        apply_impact_damage(vb, energy, normal);
                     }
                     va.state.position_m -= normal * (penetration * 0.5);
                     vb.state.position_m += normal * (penetration * 0.5);
@@ -300,39 +335,18 @@ impl PhysicsWorld {
     fn solve_static_collisions(&mut self) {
         for v in &mut self.vehicles {
             for c in &self.static_colliders {
-                if let CollisionShape::Box { half_extents_m: h } = c.shape {
-                    // v0.1 boxes are axis-aligned in the collision solver; orientation is retained for the future narrow phase.
-                    let d = v.state.position_m - c.position_m;
-                    let expanded = Vec3::new(h.x + 1.0, h.y + 0.7, h.z + 2.1);
-                    if d.x.abs() < expanded.x && d.y.abs() < expanded.y && d.z.abs() < expanded.z {
-                        let px = expanded.x - d.x.abs();
-                        let pz = expanded.z - d.z.abs();
-                        let normal =
-                            if px < pz { Vec3::new(d.x.signum(), 0.0, 0.0) } else { Vec3::new(0.0, 0.0, d.z.signum()) };
-                        let penetration = px.min(pz);
-                        let vn = v.state.linear_velocity_mps.dot(normal);
-                        if vn < 0.0 {
-                            let speed = -vn;
-                            v.state.linear_velocity_mps -= normal * ((1.0 + c.restitution) * vn);
-                            apply_impact_damage(v, 0.5 * v.mass_kg() * speed * speed);
-                        }
-                        v.state.position_m += normal * penetration;
+                if let Some((normal, penetration)) =
+                    vehicle_static_contact(v.state.position_m, v.state.orientation, v.collision_half_extents_m(), c)
+                {
+                    let vn = v.state.linear_velocity_mps.dot(normal);
+                    if vn < 0.0 {
+                        let speed = -vn;
+                        v.state.linear_velocity_mps -= normal * ((1.0 + c.restitution) * vn);
+                        let tangent = v.state.linear_velocity_mps - normal * v.state.linear_velocity_mps.dot(normal);
+                        v.state.linear_velocity_mps -= tangent * c.friction.clamp(0.0, 1.0) * 0.08;
+                        apply_impact_damage(v, 0.5 * v.mass_kg() * speed * speed, normal);
                     }
-                } else {
-                    // Capsule and convex v0.1 narrow phases use their conservative bounding sphere.
-                    let delta = v.state.position_m - c.position_m;
-                    let distance = delta.length();
-                    let contact_distance = 1.15 + c.shape.bounding_radius();
-                    if distance < contact_distance && distance > 1.0e-8 {
-                        let normal = delta / distance;
-                        let vn = v.state.linear_velocity_mps.dot(normal);
-                        if vn < 0.0 {
-                            let speed = -vn;
-                            v.state.linear_velocity_mps -= normal * ((1.0 + c.restitution) * vn);
-                            apply_impact_damage(v, 0.5 * v.mass_kg() * speed * speed);
-                        }
-                        v.state.position_m += normal * (contact_distance - distance);
-                    }
+                    v.state.position_m += normal * penetration;
                 }
             }
         }
@@ -430,19 +444,18 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             let contact = Vec3::new(mount.x, 0.0, mount.z);
             let r = contact - v.state.position_m;
             let compression = compressions[n];
-            let compression_rate = (compression - ws.previous_compression_m) / (dt * lod_stride);
+            let previous_compression = ws.suspension_compression_m;
+            let compression_rate = (compression - previous_compression) / (dt * lod_stride);
             let overtravel = (compression - wdef.max_travel_m).max(0.0);
             let axle_other = if n % 2 == 0 { n + 1 } else { n - 1 };
-            let anti_roll = (compression - compressions[axle_other])
-                * v.definition.anti_roll_rate_n_m_rad
-                * (if n % 2 == 0 { -1.0 } else { 1.0 });
+            let anti_roll = (compression - compressions[axle_other]) * v.definition.anti_roll_rate_n_m_rad;
             let suspension_health = 1.0 - 0.7 * v.state.damage.suspension[n];
             let normal = (wdef.spring_rate_n_m * suspension_health * compression
                 + wdef.damper_rate_n_s_m * suspension_health * compression_rate
                 + wdef.bump_stop_rate_n_m * overtravel
                 + anti_roll)
                 .clamp(0.0, mass * gravity * 0.8);
-            ws.previous_compression_m = ws.suspension_compression_m;
+            ws.previous_compression_m = previous_compression;
             ws.suspension_compression_m = compression;
             ws.last_normal_load_n = normal;
             ws.steer_angle_rad = v.control.steering * wdef.max_steer_rad;
@@ -496,13 +509,13 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             ws.brake_wear = (ws.brake_wear + brake_power * 4.0e-11 * dt * lod_stride).clamp(0.0, 1.0);
             road.interact(contact, tire.slip_power_w * dt * lod_stride, ws.tire.tread_temperature_k, dt * lod_stride);
         }
-        v.cached_force = force;
-        v.cached_torque = torque;
+        let lod_blend = if lod_stride <= 1.0 { 1.0 } else { clamp01(dt * lod_stride / 0.05) };
+        v.cached_force = v.cached_force.lerp(force, lod_blend);
+        v.cached_torque = v.cached_torque.lerp(torque, lod_blend);
     }
     let accel = v.cached_force / mass;
-    v.state.linear_velocity_mps += accel * dt;
-    v.state.position_m += v.state.linear_velocity_mps * dt;
-    let inertia = v.definition.chassis.inertia_kg_m2;
+    semi_implicit_linear_step(&mut v.state.position_m, &mut v.state.linear_velocity_mps, accel, dt);
+    let inertia = v.inertia_kg_m2();
     let angular_accel =
         Vec3::new(v.cached_torque.x / inertia.x, v.cached_torque.y / inertia.y, v.cached_torque.z / inertia.z);
     v.state.angular_velocity_rad_s += angular_accel * dt;
@@ -513,18 +526,29 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
         v.state.position_m.y = 0.18;
         v.state.linear_velocity_mps.y = v.state.linear_velocity_mps.y.max(0.0);
         if impact > 2.0 {
-            apply_impact_damage(v, 0.5 * mass * impact * impact);
+            apply_impact_damage(v, 0.5 * mass * impact * impact, Vec3::Y);
         }
     }
     v.state.simulation_time_s += dt;
     v.update_telemetry((v.state.linear_velocity_mps - old_velocity) / dt);
 }
 
-fn apply_impact_damage(v: &mut Vehicle, energy_j: f64) {
+fn apply_impact_damage(v: &mut Vehicle, energy_j: f64, normal_world: Vec3) {
     let severity = (energy_j / 220_000.0).clamp(0.0, 0.35);
+    v.audio.impact = (v.audio.impact + severity * 3.0).clamp(0.0, 1.0);
+    v.force_feedback.impact = (v.force_feedback.impact + severity * 4.0).clamp(0.0, 1.0);
+    if severity > 0.01 {
+        v.events.push(crate::feedback::FeedbackEvent {
+            time_s: v.state.simulation_time_s,
+            kind: crate::feedback::FeedbackEventKind::Impact,
+            magnitude: severity,
+            wheel: None,
+        });
+    }
     v.state.damage.body = (v.state.damage.body + severity).clamp(0.0, 1.0);
     v.state.damage.aero = (v.state.damage.aero + severity * 0.7).clamp(0.0, 1.0);
-    v.state.damage.deformation_local_m.z += severity * 0.025;
+    let local_normal = v.state.orientation.conjugate().rotate(normal_world).normalized();
+    v.state.damage.deformation_local_m += local_normal * (severity * 0.025);
     if severity > 0.08 {
         let wheel = (v.state.damage.body.to_bits() as usize) % 4;
         v.state.damage.suspension[wheel] = (v.state.damage.suspension[wheel] + severity).clamp(0.0, 1.0);

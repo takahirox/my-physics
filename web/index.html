@@ -13,7 +13,7 @@
       <div id="status" class="status">Loading physics.wasm…</div>
     </header>
     <section class="layout">
-      <div class="viewport"><canvas id="track"></canvas><div class="legend">3D CHASE CAMERA · WASD / arrows · Space: handbrake · R: reset · 1–6: gear</div></div>
+      <div class="viewport"><canvas id="track"></canvas><div class="legend">3D · WASD / arrows · Shift: clutch · Space: handbrake · T: auto · 1–6: gear · K/L: save/restore</div></div>
       <aside>
         <div class="metric hero"><label>SPEED</label><strong id="speed">0.0</strong><span>km/h</span></div>
         <div class="grid">
@@ -21,7 +21,12 @@
           <div class="metric"><label>GEAR</label><strong id="gear">1</strong></div>
           <div class="metric"><label>SIM TIME</label><strong id="time">0.00</strong><span>s</span></div>
           <div class="metric"><label>PHYSICS LOD</label><strong id="lod">100</strong><span>%</span></div>
+          <div class="metric"><label>10-CAR BENCH</label><strong id="performance">—</strong></div>
+          <div class="metric"><label>FFB TORQUE</label><strong id="ffb">0.0 Nm</strong></div>
         </div>
+        <div class="device"><label>INPUT</label><span id="inputDevice">KEYBOARD</span></div>
+        <div class="device"><label>QUALITY</label><select id="quality"><option value="auto">AUTO (BENCHMARK)</option><option value="2">HIGH</option><option value="1">MEDIUM</option><option value="0">LOW</option></select></div>
+        <div class="snapshot"><button id="saveSnapshot">SAVE SNAPSHOT · K</button><button id="restoreSnapshot">RESTORE · L</button><span id="snapshotStatus">NOT SAVED</span></div>
         <h2>Tire state</h2>
         <div id="tires" class="tires"></div>
         <div class="bars"><label>BODY DAMAGE <span id="damageText">0%</span></label><div><i id="damage"></i></div></div>

@@ -83,4 +83,11 @@ impl DynamicRoad {
     pub fn cells(&self) -> &[RoadCell] {
         &self.cells
     }
+    pub(crate) fn replace_cells(&mut self, cells: Vec<RoadCell>) -> bool {
+        if cells.len() != self.width * self.height {
+            return false;
+        }
+        self.cells = cells;
+        true
+    }
 }

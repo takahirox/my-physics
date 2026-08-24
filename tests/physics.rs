@@ -1,6 +1,9 @@
 use my_physics::road::RoadCell;
 use my_physics::tire::{TireFailure, TireState};
-use my_physics::{DriverInput, MagicFormulaTire, PhysicsWorld, SimulationConfig, StepError, TireInput, TireModel};
+use my_physics::{
+    ArchiveError, DriverInput, MagicFormulaTire, PhysicsWorld, SimulationConfig, Snapshot, StepError, TireInput,
+    TireModel, decode_input_history, encode_input_history,
+};
 
 #[test]
 fn fixed_step_is_bit_repeatable() {
@@ -159,4 +162,56 @@ fn vehicle_collision_applies_impulse_and_physical_damage() {
     assert!(w.vehicles[0].state.damage.body > 0.0);
     assert!(w.vehicles[1].state.damage.body > 0.0);
     assert!(w.vehicles[0].state.linear_velocity_mps.z > -10.0);
+}
+
+#[test]
+fn versioned_snapshot_archive_round_trips_complete_state() {
+    let mut world = PhysicsWorld::demo(10);
+    world.wind_mps = my_physics::Vec3::new(2.0, 0.0, -4.0);
+    world.rain_rate_m_s = 0.000_01;
+    world.set_input(0, DriverInput { throttle: 0.7, steering: 0.1, ..DriverInput::default() }).unwrap();
+    world.step_fixed(800).unwrap();
+    let original = world.snapshot();
+    let bytes = original.to_bytes();
+    let decoded = Snapshot::from_bytes(&bytes).unwrap();
+    assert_eq!(decoded, original);
+    assert_eq!(decoded.fingerprint(), original.fingerprint());
+}
+
+#[test]
+fn snapshot_archive_detects_corruption() {
+    let mut bytes = PhysicsWorld::demo(1).snapshot().to_bytes();
+    bytes[32] ^= 0x40;
+    assert_eq!(Snapshot::from_bytes(&bytes), Err(ArchiveError::ChecksumMismatch));
+}
+
+#[test]
+fn timed_input_history_is_persistent() {
+    let mut world = PhysicsWorld::demo(1);
+    world.set_input(0, DriverInput { throttle: 0.4, ..DriverInput::default() }).unwrap();
+    world.step_fixed(10).unwrap();
+    world.set_input(0, DriverInput { brake: 0.2, steering: -0.3, ..DriverInput::default() }).unwrap();
+    let bytes = encode_input_history(&world.recorded_inputs);
+    assert_eq!(decode_input_history(&bytes).unwrap(), world.recorded_inputs);
+}
+
+#[test]
+fn render_state_interpolates_without_changing_physics() {
+    let mut world = PhysicsWorld::demo(1);
+    world.vehicles[0].state.linear_velocity_mps.z = -10.0;
+    world.step_fixed(1).unwrap();
+    let before = world.state_fingerprint();
+    let start = world.vehicles[0].interpolated_state(0.0);
+    let middle = world.vehicles[0].interpolated_state(0.5);
+    let end = world.vehicles[0].interpolated_state(1.0);
+    assert!((middle.position_m.z - (start.position_m.z + end.position_m.z) * 0.5).abs() < 1.0e-12);
+    assert_eq!(world.state_fingerprint(), before);
+}
+
+#[test]
+fn reference_scenario_matches_golden_regression_fingerprint() {
+    let mut world = PhysicsWorld::demo(10);
+    world.set_input(0, DriverInput { throttle: 0.72, ..DriverInput::default() }).unwrap();
+    world.step_fixed(2_000).unwrap();
+    assert_eq!(world.state_fingerprint(), 0xc052_011a_e490_879b);
 }

@@ -124,9 +124,12 @@ impl TireModel for MagicFormulaTire {
         let sy = (self.lateral_stiffness * i.slip_angle_rad).atan().sin();
         let combined = (sx * sx + sy * sy).sqrt().max(1.0);
         let peak = mu * i.normal_load_n;
-        let fx = peak * sx / combined;
+        let raw_fx = peak * sx / combined;
         let camber_thrust = (-i.camber_rad * 0.08 * i.normal_load_n).clamp(-peak * 0.18, peak * 0.18);
-        let fy = (-peak * sy / combined + camber_thrust).clamp(-peak, peak);
+        let raw_fy = (-peak * sy / combined + camber_thrust).clamp(-peak, peak);
+        let ellipse = (raw_fx * raw_fx + raw_fy * raw_fy).sqrt().max(peak);
+        let fx = raw_fx * peak / ellipse;
+        let fy = raw_fy * peak / ellipse;
         let trail = 0.055 * (1.0 - state.wear) * pressure_ratio.sqrt();
         let rr_coeff = 0.012 + 0.025 * (1.0 - pressure_ratio).max(0.0) + 0.08 * state.carcass_damage;
         let rr = rr_coeff * i.normal_load_n;

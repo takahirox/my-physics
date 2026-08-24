@@ -135,6 +135,21 @@ impl Quat {
         }
         (Self::from_axis_angle(omega.normalized(), angle) * self).normalized()
     }
+    pub fn nlerp(self, rhs: Self, t: f64) -> Self {
+        let mut target = rhs;
+        let dot = self.w * rhs.w + self.x * rhs.x + self.y * rhs.y + self.z * rhs.z;
+        if dot < 0.0 {
+            target = Self::new(-rhs.w, -rhs.x, -rhs.y, -rhs.z);
+        }
+        let t = t.clamp(0.0, 1.0);
+        Self::new(
+            self.w + (target.w - self.w) * t,
+            self.x + (target.x - self.x) * t,
+            self.y + (target.y - self.y) * t,
+            self.z + (target.z - self.z) * t,
+        )
+        .normalized()
+    }
 }
 
 impl Mul for Quat {
@@ -155,4 +170,9 @@ pub fn clamp01(v: f64) -> f64 {
 pub fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = clamp01((x - a) / (b - a));
     t * t * (3.0 - 2.0 * t)
+}
+
+pub fn semi_implicit_linear_step(position: &mut Vec3, velocity: &mut Vec3, acceleration: Vec3, dt: f64) {
+    *velocity += acceleration * dt;
+    *position += *velocity * dt;
 }

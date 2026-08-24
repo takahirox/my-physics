@@ -30,7 +30,7 @@ wind ─► aero ─────────────► 6-DoF chassis
                      snapshot + telemetry + events
 ```
 
-The native and WASM paths call this same flow. Non-player LOD caches expensive force evaluation for 4 or 10 base ticks while continuing rigid-body integration every 1 ms. A first-order transition over `lod_transition_s` avoids abrupt fidelity changes.
+The native and WASM paths call this same flow. Non-player LOD caches expensive force evaluation for 4 or 10 base ticks while continuing rigid-body integration every 1 ms. A first-order fidelity transition plus 50 ms cached-force blending avoids abrupt LOD changes. Device benchmarks set an automatic fidelity ceiling and applications can override it.
 
 ## Determinism policy (v0.1)
 
@@ -40,6 +40,7 @@ The native and WASM paths call this same flow. Non-player LOD caches expensive f
 - Quaternion normalization every integration step
 - FNV-1a state fingerprint used by regression tests
 - Snapshots clone every authoritative world field; input frames are indexed by physics step
+- Canonical little-endian archives carry an explicit version, bounded lengths and a whole-payload checksum
 
 Current tests establish repeatability on one toolchain/platform. They do not claim identical bits across all CPUs, browsers or compiler versions. v1.0 needs documented math routines, compiler flags, plugin rules and a tested determinism matrix.
 
@@ -51,4 +52,4 @@ Vehicle definitions separate authored constants from runtime state. A later sche
 
 ## Snapshot compatibility
 
-The current `Snapshot` is complete and deterministic within the Rust API but intentionally has no promised wire format. v0.2 will introduce versioned canonical serialization, checksums and migration tests before snapshots are used across builds or over a network.
+`Snapshot::to_bytes` produces the canonical v0.1 wire format and `Snapshot::from_bytes` validates its magic, version, lengths, finite floating-point values, quaternion norms and checksum. Timed input history uses a separately typed archive. Format changes require a new version and migration policy; silent reinterpretation is forbidden.
