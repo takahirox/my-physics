@@ -48,7 +48,7 @@ The integration suite currently covers:
 
 The chassis uses semi-implicit Euler integration at 1 ms, which is robust for the current stiff but bounded forces. Tire forces are constrained by a combined-slip friction ellipse. Flat-road suspension reactions and tire forces use the road-normal/tangent basis rather than feeding chassis roll into the contact plane. Suspension travel, normal force and high-risk ratios are bounded. Every step rejects non-finite primary vehicle state.
 
-The reference RWD definition assigns authored rear-tire scales of 1.05 cornering stiffness and 1.06 peak grip to represent a wider rear fitment and provide a measurable understeer gradient. It is a game/validation calibration, not a measured vehicle fit or a claim of real-world correlation; provenance remains authored until reference telemetry is available.
+The engineering-reference RWD definition uses symmetric 1.0 tire-fitment scales. The separate browser race preset assigns authored rear-tire scales of 1.05 cornering stiffness and 1.06 peak grip to provide a measurable understeer gradient. It is a game calibration, not a measured vehicle fit or a claim of real-world correlation. Both presets use identical physical equations and expose their provenance.
 
 ## Required next validation
 

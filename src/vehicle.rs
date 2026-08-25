@@ -1,6 +1,7 @@
 use crate::controls::{AidSensors, ControlOutput, DriverAids, DriverInput};
 use crate::feedback::{AudioFrame, FeedbackEvent, FeedbackEventKind, ForceFeedbackFrame};
 use crate::math::{Quat, Vec3, clamp01};
+use crate::provenance::{ParameterOrigin, ParameterProvenance, ParameterValidity, VehicleParameterProvenance};
 use crate::tire::{MagicFormulaTire, TireInput, TireModel, TireOutput, TireState};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,10 +66,34 @@ pub struct VehicleDefinition {
     pub fuel_capacity_kg: f64,
     pub fuel_tank_local_m: Vec3,
     pub anti_roll_rate_n_m_rad: f64,
+    pub provenance: VehicleParameterProvenance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VehiclePreset {
+    EngineeringReference,
+    RaceGameplay,
 }
 
 impl Default for VehicleDefinition {
     fn default() -> Self {
+        // Preserve the v0.1 public API's established vehicle behavior. New
+        // validation code should select `engineering_reference()` explicitly.
+        Self::race_gameplay()
+    }
+}
+
+impl VehicleDefinition {
+    pub fn from_preset(preset: VehiclePreset) -> Self {
+        match preset {
+            VehiclePreset::EngineeringReference => Self::engineering_reference(),
+            VehiclePreset::RaceGameplay => Self::race_gameplay(),
+        }
+    }
+
+    /// Transparent, symmetric reference data for model validation. Values are
+    /// authored or estimated until instrumented reference-vehicle data exists.
+    pub fn engineering_reference() -> Self {
         let front = WheelDefinition {
             mount_local_m: Vec3::new(0.78, 0.0, -1.23),
             radius_m: 0.33,
@@ -92,16 +117,14 @@ impl Default for VehicleDefinition {
             max_steer_rad: 0.0,
             driven: true,
             brake_torque_nm: 3_100.0,
-            // Wider rear fitment gives the reference RWD car a small,
-            // measurable understeer gradient at the adhesion limit.
-            cornering_stiffness_scale: 1.05,
-            tire_peak_grip_scale: 1.06,
+            cornering_stiffness_scale: 1.0,
+            tire_peak_grip_scale: 1.0,
             ..front
         };
         let mut rl = rear;
         rl.mount_local_m.x = -0.78;
         Self {
-            name: "RWD Prototype".into(),
+            name: "RWD Engineering Reference".into(),
             chassis: ChassisDefinition {
                 dry_mass_kg: 1380.0,
                 cg_local_m: Vec3::ZERO,
@@ -141,7 +164,172 @@ impl Default for VehicleDefinition {
             fuel_capacity_kg: 55.0,
             fuel_tank_local_m: Vec3::new(0.0, -0.05, 0.72),
             anti_roll_rate_n_m_rad: 12_000.0,
+            provenance: engineering_provenance(),
         }
+    }
+
+    /// The browser race demo's authored balance preset. It uses exactly the
+    /// same plant and parameter meanings as the engineering reference; only
+    /// the explicitly visible rear fitment scales differ.
+    pub fn race_gameplay() -> Self {
+        let mut definition = Self::engineering_reference();
+        definition.name = "RWD Race Gameplay".into();
+        for wheel in &mut definition.wheels[2..] {
+            wheel.cornering_stiffness_scale = 1.05;
+            wheel.tire_peak_grip_scale = 1.06;
+        }
+        definition.provenance.rear_wheels_and_tires = ParameterProvenance::new(
+            ParameterOrigin::Authored,
+            "v0.1 race balance calibration; no measured vehicle or tire source",
+            "race-gameplay-v1",
+            None,
+            wheel_ranges(false),
+        );
+        definition
+    }
+}
+
+fn ranges(values: &[(&str, &str, f64, f64)]) -> Vec<ParameterValidity> {
+    values.iter().map(|&(name, unit, minimum, maximum)| ParameterValidity::new(name, unit, minimum, maximum)).collect()
+}
+
+fn provenance(
+    origin: ParameterOrigin,
+    source: &str,
+    uncertainty_fraction: Option<f64>,
+    valid_ranges: Vec<ParameterValidity>,
+) -> ParameterProvenance {
+    ParameterProvenance::new(origin, source, "engineering-reference-v1", uncertainty_fraction, valid_ranges)
+}
+
+fn wheel_ranges(front: bool) -> Vec<ParameterValidity> {
+    let names = if front {
+        [
+            "front_track_half_width",
+            "front_axle_position",
+            "front_wheel_radius",
+            "front_wheel_inertia",
+            "front_wheel_mass",
+            "front_max_steer",
+            "front_cornering_stiffness_scale",
+            "front_tire_peak_grip_scale",
+        ]
+    } else {
+        [
+            "rear_track_half_width",
+            "rear_axle_position",
+            "rear_wheel_radius",
+            "rear_wheel_inertia",
+            "rear_wheel_mass",
+            "rear_max_steer",
+            "rear_cornering_stiffness_scale",
+            "rear_tire_peak_grip_scale",
+        ]
+    };
+    let limits = [
+        ("m", 0.6, 1.0),
+        ("m", -1.5, 1.5),
+        ("m", 0.25, 0.45),
+        ("kg*m^2", 0.5, 3.0),
+        ("kg", 8.0, 35.0),
+        ("rad", 0.0, 0.7),
+        ("ratio", 0.5, 1.5),
+        ("ratio", 0.5, 1.5),
+    ];
+    names
+        .into_iter()
+        .zip(limits)
+        .map(|(name, (unit, minimum, maximum))| ParameterValidity::new(name, unit, minimum, maximum))
+        .collect()
+}
+
+fn engineering_provenance() -> VehicleParameterProvenance {
+    const SOURCE: &str = "v0.1 authored prototype definition; no measured reference-vehicle source";
+    VehicleParameterProvenance {
+        chassis_mass_properties: provenance(
+            ParameterOrigin::Estimated,
+            SOURCE,
+            Some(0.15),
+            ranges(&[
+                ("dry_mass", "kg", 800.0, 2_500.0),
+                ("cg_x", "m", -1.0, 1.0),
+                ("cg_y", "m", -1.0, 1.0),
+                ("cg_z", "m", -2.0, 2.0),
+                ("inertia_x", "kg*m^2", 100.0, 5_000.0),
+                ("inertia_y", "kg*m^2", 100.0, 8_000.0),
+                ("inertia_z", "kg*m^2", 100.0, 8_000.0),
+            ]),
+        ),
+        aerodynamics: provenance(
+            ParameterOrigin::Estimated,
+            SOURCE,
+            Some(0.20),
+            ranges(&[
+                ("frontal_area", "m^2", 1.0, 4.0),
+                ("drag_coefficient", "ratio", 0.1, 1.5),
+                ("lift_coefficient", "ratio", -3.0, 1.0),
+                ("reference_air_density", "kg/m^3", 0.8, 1.5),
+            ]),
+        ),
+        front_wheels_and_tires: provenance(ParameterOrigin::Authored, SOURCE, None, wheel_ranges(true)),
+        rear_wheels_and_tires: provenance(ParameterOrigin::Authored, SOURCE, None, wheel_ranges(false)),
+        suspension: provenance(
+            ParameterOrigin::Authored,
+            SOURCE,
+            None,
+            ranges(&[
+                ("spring_rate", "N/m", 5_000.0, 200_000.0),
+                ("damper_rate", "N*s/m", 500.0, 20_000.0),
+                ("rest_length", "m", 0.1, 0.6),
+                ("maximum_travel", "m", 0.03, 0.4),
+                ("bump_stop_rate", "N/m", 10_000.0, 1_000_000.0),
+                ("anti_roll_rate", "N*m/rad", 0.0, 100_000.0),
+            ]),
+        ),
+        brakes: provenance(
+            ParameterOrigin::Authored,
+            SOURCE,
+            None,
+            ranges(&[("front_brake_torque", "N*m", 0.0, 10_000.0), ("rear_brake_torque", "N*m", 0.0, 10_000.0)]),
+        ),
+        engine: provenance(
+            ParameterOrigin::Authored,
+            SOURCE,
+            None,
+            ranges(&[
+                ("idle_speed", "rpm", 400.0, 2_000.0),
+                ("redline", "rpm", 3_000.0, 15_000.0),
+                ("engine_inertia", "kg*m^2", 0.05, 2.0),
+                ("torque_curve_speed", "rpm", 0.0, 20_000.0),
+                ("torque_curve_torque", "N*m", 0.0, 2_000.0),
+                ("fuel_energy", "J/kg", 10_000_000.0, 60_000_000.0),
+                ("thermal_efficiency", "ratio", 0.05, 0.65),
+            ]),
+        ),
+        transmission_and_clutch: provenance(
+            ParameterOrigin::Authored,
+            SOURCE,
+            None,
+            ranges(&[
+                ("forward_gear_ratio", "ratio", 0.1, 8.0),
+                ("reverse_gear_ratio", "ratio", -8.0, -0.1),
+                ("final_drive", "ratio", 0.5, 10.0),
+                ("shift_time", "s", 0.01, 2.0),
+                ("clutch_capacity", "N*m", 10.0, 5_000.0),
+                ("clutch_stiffness", "N*m/(rad/s)", 0.1, 100.0),
+            ]),
+        ),
+        fuel_system: provenance(
+            ParameterOrigin::Estimated,
+            SOURCE,
+            Some(0.10),
+            ranges(&[
+                ("fuel_capacity", "kg", 1.0, 200.0),
+                ("fuel_tank_x", "m", -2.0, 2.0),
+                ("fuel_tank_y", "m", -1.0, 1.0),
+                ("fuel_tank_z", "m", -3.0, 3.0),
+            ]),
+        ),
     }
 }
 

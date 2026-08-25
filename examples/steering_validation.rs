@@ -9,7 +9,7 @@ fn yaw(q: Quat) -> f64 {
 }
 
 fn steering_response(speed_mps: f64, command: f64) -> (f64, f64, f64) {
-    let mut definition = VehicleDefinition::default();
+    let mut definition = VehicleDefinition::race_gameplay();
     definition.transmission.automatic = false;
     let mut world = PhysicsWorld::new(SimulationConfig::default());
     let index = world.add_vehicle(definition);

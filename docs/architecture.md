@@ -48,7 +48,7 @@ Current tests establish repeatability on one toolchain/platform. They do not cla
 
 `TireModel` is the first public replaceable physical interface. Suspension, differential, powertrain and aerodynamics are kept in clearly bounded modules/data and will receive stable traits after reference behavior is validated. Freezing all plugin interfaces in v0.1 would preserve the wrong abstractions.
 
-Vehicle definitions separate authored constants from runtime state. A later schema will add units, provenance (`measured`, `estimated`, `fitted`, `authored`), uncertainty, schema version and migration metadata.
+Vehicle definitions separate constants from runtime state. Built-in engineering-reference and race-gameplay presets use one schema and the same physical equations. Fixed parameter groups carry origin (`measured`, `derived`, `fitted`, `estimated`, `authored`), source, revision, uncertainty and named validity ranges with units. The current built-ins make no measured-data claim. See [Vehicle presets and parameter provenance](vehicle-data.md).
 
 ## Snapshot compatibility
 

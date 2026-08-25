@@ -6,7 +6,7 @@ use my_physics::{
 };
 
 fn flat_vehicle(speed_mps: f64) -> PhysicsWorld {
-    let mut definition = VehicleDefinition::default();
+    let mut definition = VehicleDefinition::race_gameplay();
     definition.transmission.automatic = false;
     let mut world = PhysicsWorld::new(SimulationConfig::default());
     let index = world.add_vehicle(definition);

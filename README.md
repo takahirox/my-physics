@@ -23,6 +23,7 @@ My Physics is a deterministic, headless-first vehicle and motorsport physics eng
 - Complete versioned/checksummed snapshot archives, persistent timed input history, restore and deterministic re-simulation
 - Detailed telemetry, expanded headless CSV, continuous Audio/FFB frames and discrete physical events
 - Raw WebAssembly API and rendering-independent WebGL2 3D demo with metric-spaced track detail plus switchable close chase and hood cameras
+- Explicit engineering-reference and race-gameplay vehicle-data presets with parameter-group provenance and validity metadata
 
 ## Run it
 
@@ -48,7 +49,7 @@ cargo run --release --example steering_validation
 
 The physical plant is reusable and has no renderer, DOM, browser or game-engine dependency. `PhysicsWorld` owns deterministic timing, road state, collisions, LOD, snapshots and vehicles. Each `Vehicle` composes chassis, wheels, tires, suspension, powertrain, damage and telemetry. Driver aids consume sensor values and return control commands through a separate module.
 
-All internal quantities use SI units and radians. Coordinates are right-handed and Three.js-compatible: +X right, +Y up and -Z vehicle-forward. See the [v0.1 acceptance matrix](docs/v0.1-acceptance.md), [Architecture](docs/architecture.md), [Validation](docs/validation.md), [Performance](docs/performance.md), and the [Roadmap](docs/roadmap.md).
+All internal quantities use SI units and radians. Coordinates are right-handed and Three.js-compatible: +X right, +Y up and -Z vehicle-forward. See the [v0.1 acceptance matrix](docs/v0.1-acceptance.md), [Architecture](docs/architecture.md), [Vehicle data and provenance](docs/vehicle-data.md), [Validation](docs/validation.md), [Performance](docs/performance.md), and the [Roadmap](docs/roadmap.md).
 
 ## Fidelity and honest limitations
 

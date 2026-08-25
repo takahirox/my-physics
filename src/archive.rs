@@ -8,6 +8,7 @@ use crate::collision::{CollisionShape, DetachedBody, StaticCollider};
 use crate::controls::{ControlOutput, DriverAids, DriverInput};
 use crate::feedback::{AudioFrame, FeedbackEvent, FeedbackEventKind, ForceFeedbackFrame};
 use crate::math::{Quat, Vec3};
+use crate::provenance::{ParameterOrigin, ParameterProvenance, ParameterValidity, VehicleParameterProvenance};
 use crate::road::{DynamicRoad, RoadCell};
 use crate::tire::{MagicFormulaTire, TireFailure, TireOutput, TireState};
 use crate::vehicle::{
@@ -18,7 +19,8 @@ use crate::world::{Fidelity, InputFrame, SimulationConfig, Snapshot};
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"MYPHY001";
 const INPUT_MAGIC: &[u8; 8] = b"MYINP001";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
+const INPUT_VERSION: u32 = 2;
 const MAX_ITEMS: usize = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,9 +54,6 @@ struct Writer {
 }
 
 impl Writer {
-    fn new(magic: &[u8; 8]) -> Self {
-        Self::with_version(magic, VERSION)
-    }
     fn with_version(magic: &[u8; 8], version: u32) -> Self {
         debug_assert!((1..=VERSION).contains(&version));
         let mut writer = Self { bytes: Vec::new(), version };
@@ -234,7 +233,8 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, ArchiveError> {
 }
 
 pub fn encode_input_history(frames: &[InputFrame]) -> Vec<u8> {
-    let mut writer = Writer::new(INPUT_MAGIC);
+    // The input-frame layout did not change with snapshot v3.
+    let mut writer = Writer::with_version(INPUT_MAGIC, INPUT_VERSION);
     writer.usize(frames.len());
     for frame in frames {
         writer.u64(frame.step);
@@ -465,10 +465,13 @@ fn write_vehicle_definition(w: &mut Writer, value: &VehicleDefinition) {
     w.f64(value.fuel_capacity_kg);
     write_vec3(w, value.fuel_tank_local_m);
     w.f64(value.anti_roll_rate_n_m_rad);
+    if w.version >= 3 {
+        write_vehicle_provenance(w, &value.provenance);
+    }
 }
 
 fn read_vehicle_definition(r: &mut Reader<'_>) -> Result<VehicleDefinition, ArchiveError> {
-    Ok(VehicleDefinition {
+    let mut definition = VehicleDefinition {
         name: r.string()?,
         chassis: read_chassis_definition(r)?,
         wheels: [
@@ -482,7 +485,88 @@ fn read_vehicle_definition(r: &mut Reader<'_>) -> Result<VehicleDefinition, Arch
         fuel_capacity_kg: r.f64()?,
         fuel_tank_local_m: read_vec3(r)?,
         anti_roll_rate_n_m_rad: r.f64()?,
-    })
+        provenance: VehicleParameterProvenance::legacy_archive(r.version),
+    };
+    if r.version >= 3 {
+        definition.provenance = read_vehicle_provenance(r)?;
+    }
+    Ok(definition)
+}
+
+fn write_vehicle_provenance(w: &mut Writer, value: &VehicleParameterProvenance) {
+    for (_, group) in value.groups() {
+        write_parameter_provenance(w, group);
+    }
+}
+
+fn read_vehicle_provenance(r: &mut Reader<'_>) -> Result<VehicleParameterProvenance, ArchiveError> {
+    let value = VehicleParameterProvenance {
+        chassis_mass_properties: read_parameter_provenance(r)?,
+        aerodynamics: read_parameter_provenance(r)?,
+        front_wheels_and_tires: read_parameter_provenance(r)?,
+        rear_wheels_and_tires: read_parameter_provenance(r)?,
+        suspension: read_parameter_provenance(r)?,
+        brakes: read_parameter_provenance(r)?,
+        engine: read_parameter_provenance(r)?,
+        transmission_and_clutch: read_parameter_provenance(r)?,
+        fuel_system: read_parameter_provenance(r)?,
+    };
+    if !value.is_complete() {
+        return Err(ArchiveError::InvalidData);
+    }
+    Ok(value)
+}
+
+fn write_parameter_provenance(w: &mut Writer, value: &ParameterProvenance) {
+    w.u8(match value.origin {
+        ParameterOrigin::Measured => 0,
+        ParameterOrigin::Derived => 1,
+        ParameterOrigin::Fitted => 2,
+        ParameterOrigin::Estimated => 3,
+        ParameterOrigin::Authored => 4,
+    });
+    w.string(&value.source);
+    w.string(&value.revision);
+    w.bool(value.uncertainty_fraction.is_some());
+    if let Some(uncertainty) = value.uncertainty_fraction {
+        w.f64(uncertainty);
+    }
+    w.usize(value.valid_ranges.len());
+    for range in &value.valid_ranges {
+        w.string(&range.parameter);
+        w.string(&range.unit);
+        w.f64(range.minimum);
+        w.f64(range.maximum);
+    }
+}
+
+fn read_parameter_provenance(r: &mut Reader<'_>) -> Result<ParameterProvenance, ArchiveError> {
+    let origin = match r.u8()? {
+        0 => ParameterOrigin::Measured,
+        1 => ParameterOrigin::Derived,
+        2 => ParameterOrigin::Fitted,
+        3 => ParameterOrigin::Estimated,
+        4 => ParameterOrigin::Authored,
+        _ => return Err(ArchiveError::InvalidData),
+    };
+    let source = r.string()?;
+    let revision = r.string()?;
+    let uncertainty_fraction = if r.bool()? { Some(r.f64()?) } else { None };
+    let range_count = r.usize()?;
+    let mut valid_ranges = Vec::with_capacity(range_count);
+    for _ in 0..range_count {
+        valid_ranges.push(ParameterValidity {
+            parameter: r.string()?,
+            unit: r.string()?,
+            minimum: r.f64()?,
+            maximum: r.f64()?,
+        });
+    }
+    let value = ParameterProvenance { origin, source, revision, uncertainty_fraction, valid_ranges };
+    if !value.is_complete() {
+        return Err(ArchiveError::InvalidData);
+    }
+    Ok(value)
 }
 
 fn write_chassis_definition(w: &mut Writer, value: ChassisDefinition) {
@@ -1184,6 +1268,7 @@ fn read_bool_array<const N: usize>(r: &mut Reader<'_>) -> Result<[bool; N], Arch
 #[cfg(test)]
 mod tests {
     use super::{decode_snapshot, encode_snapshot_version};
+    use crate::provenance::ParameterOrigin;
     use crate::world::PhysicsWorld;
 
     #[test]
@@ -1200,5 +1285,20 @@ mod tests {
                 .iter()
                 .all(|wheel| wheel.cornering_stiffness_scale == 1.0 && wheel.tire_peak_grip_scale == 1.0)
         );
+    }
+
+    #[test]
+    fn version_two_snapshot_preserves_physical_data_and_marks_provenance_legacy() {
+        let snapshot = PhysicsWorld::demo(1).snapshot();
+        let decoded = decode_snapshot(&encode_snapshot_version(&snapshot, 2)).unwrap();
+
+        assert_eq!(decoded.vehicles[0].definition.wheels, snapshot.vehicles[0].definition.wheels);
+        assert_eq!(decoded.vehicles[0].definition.chassis, snapshot.vehicles[0].definition.chassis);
+        assert!(decoded.vehicles[0].definition.provenance.is_complete());
+        for (_, provenance) in decoded.vehicles[0].definition.provenance.groups() {
+            assert_eq!(provenance.origin, ParameterOrigin::Authored);
+            assert!(provenance.source.contains("legacy snapshot"));
+            assert_eq!(provenance.revision, "snapshot-v2");
+        }
     }
 }

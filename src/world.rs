@@ -133,7 +133,7 @@ impl PhysicsWorld {
         w.road = DynamicRoad::new(160, 160, 4.5);
         let circuit = circuit::segments();
         for n in 0..vehicle_count {
-            let mut v = Vehicle::new(VehicleDefinition::default());
+            let mut v = Vehicle::new(VehicleDefinition::race_gameplay());
             // The circuit demo uses a race preset. ESC remains implemented and
             // can be enabled by applications, but is not allowed to fight rapid
             // driver-requested direction changes by default.

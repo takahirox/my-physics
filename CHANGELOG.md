@@ -1,5 +1,7 @@
 # Changelog
 
+- Split the engineering-reference and race-gameplay vehicle presets without changing the physical plant, and added versioned parameter provenance metadata.
+
 ## 0.1.0 — implementation complete, release administration pending
 
 - Added deterministic fixed/variable timing, 6-DoF chassis and smooth multi-vehicle LOD.
