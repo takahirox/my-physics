@@ -32,6 +32,9 @@ The integration suite currently covers:
 | persistent archives | complete snapshot equality, checksum rejection and timed-input round trip |
 | analytical integration | semi-implicit constant-acceleration result matches its discrete closed form |
 | force constraint | combined tire force remains within the computed friction circle |
+| dry longitudinal tire curve | the reference tire peaks between 10–20% slip and locked-wheel sliding force remains 70–90% of peak |
+| dry ABS envelope | 100 km/h stopping distance, lock duration, target-slip occupancy, ABS-off comparison and mid-stop snapshot/resimulation are bounded |
+| limit cornering | two friction-feasible high-g steering ramps remain forward-facing, low-slip and left/right symmetric; a low-g ramp remains within 5% of the bicycle reference |
 | collision primitives | rotated box, capsule, convex and vehicle pair fixtures produce contacts/damage |
 | effective failures | clutch/gearbox wear reaches physical failure and emits events |
 | long-run stability | quaternion norm and finite state remain bounded in fixed/variable scenarios |
@@ -42,7 +45,9 @@ The integration suite currently covers:
 
 ## Numerical strategy
 
-The chassis uses semi-implicit Euler integration at 1 ms, which is robust for the current stiff but bounded forces. Tire forces are constrained by a combined-slip friction ellipse. Suspension travel, normal force and high-risk ratios are bounded. Every step rejects non-finite primary vehicle state.
+The chassis uses semi-implicit Euler integration at 1 ms, which is robust for the current stiff but bounded forces. Tire forces are constrained by a combined-slip friction ellipse. Flat-road suspension reactions and tire forces use the road-normal/tangent basis rather than feeding chassis roll into the contact plane. Suspension travel, normal force and high-risk ratios are bounded. Every step rejects non-finite primary vehicle state.
+
+The reference RWD definition assigns authored rear-tire scales of 1.05 cornering stiffness and 1.06 peak grip to represent a wider rear fitment and provide a measurable understeer gradient. It is a game/validation calibration, not a measured vehicle fit or a claim of real-world correlation; provenance remains authored until reference telemetry is available.
 
 ## Required next validation
 

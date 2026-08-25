@@ -109,16 +109,29 @@ pub struct DriverAids {
     pub abs_enabled: bool,
     pub traction_control_enabled: bool,
     pub stability_control_enabled: bool,
+    abs_pressure: [f64; 4],
     tc_integrator: f64,
 }
 
 impl Default for DriverAids {
     fn default() -> Self {
-        Self { abs_enabled: true, traction_control_enabled: true, stability_control_enabled: true, tc_integrator: 0.0 }
+        Self {
+            abs_enabled: true,
+            traction_control_enabled: true,
+            stability_control_enabled: true,
+            abs_pressure: [0.0; 4],
+            tc_integrator: 0.0,
+        }
     }
 }
 
 impl DriverAids {
+    pub(crate) fn abs_pressure(&self) -> [f64; 4] {
+        self.abs_pressure
+    }
+    pub(crate) fn set_abs_pressure(&mut self, pressure: [f64; 4]) {
+        self.abs_pressure = pressure.map(|value| value.clamp(0.0, 1.0));
+    }
     pub(crate) fn integrator(&self) -> f64 {
         self.tc_integrator
     }
@@ -138,12 +151,37 @@ impl DriverAids {
         out.brake_per_wheel[2] = (out.brake_per_wheel[2] + i.handbrake).min(1.0);
         out.brake_per_wheel[3] = (out.brake_per_wheel[3] + i.handbrake).min(1.0);
         if self.abs_enabled && s.speed_mps > 2.0 {
-            for (n, slip) in s.wheel_slip.iter().enumerate() {
-                if *slip < -0.16 && out.brake_per_wheel[n] > 0.0 {
-                    out.brake_per_wheel[n] *= 0.35;
-                    out.abs_active[n] = true;
+            for (n, slip) in s.wheel_slip.iter().copied().enumerate() {
+                let requested = out.brake_per_wheel[n];
+                let pressure = &mut self.abs_pressure[n];
+                if requested <= 0.0 {
+                    *pressure = (*pressure - 18.0 * dt).max(0.0);
+                    out.brake_per_wheel[n] = 0.0;
+                    continue;
                 }
+
+                // Stateful pressure modulation keeps the tire on the broad
+                // dry-force peak instead of switching between full pressure
+                // and a single reduced value after the wheel has locked.
+                let rate_per_s = if slip < -0.30 {
+                    -28.0
+                } else if slip < -0.18 {
+                    -12.0
+                } else if slip < -0.14 {
+                    -3.0
+                } else if slip <= -0.08 {
+                    2.5
+                } else if slip <= -0.05 {
+                    7.0
+                } else {
+                    20.0
+                };
+                *pressure = (*pressure + rate_per_s * dt).clamp(0.0, requested);
+                out.brake_per_wheel[n] = *pressure;
+                out.abs_active[n] = (*pressure - requested).abs() > 1.0e-9 || slip < -0.14;
             }
+        } else {
+            self.abs_pressure = out.brake_per_wheel;
         }
         if self.traction_control_enabled {
             let driven_slip = s.wheel_slip[2].max(s.wheel_slip[3]);

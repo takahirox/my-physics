@@ -119,8 +119,11 @@ impl TireModel for MagicFormulaTire {
             * failure_grip
             * (1.0 - 0.82 * hydro);
 
-        // Pacejka-like sine(arctan()) curves, normalized through a friction ellipse.
-        let sx = (self.longitudinal_stiffness * i.longitudinal_slip).atan().sin();
+        // Magic-Formula-family longitudinal curve. C and E produce a broad
+        // dry peak around 10-20% slip and retain useful sliding friction at a
+        // locked-wheel slip of one. Combined demand is normalized below.
+        let bx = self.longitudinal_stiffness * i.longitudinal_slip;
+        let sx = (1.9 * (bx - 0.94 * (bx - bx.atan())).atan()).sin();
         let sy = (self.lateral_stiffness * i.slip_angle_rad).atan().sin();
         let combined = (sx * sx + sy * sy).sqrt().max(1.0);
         let peak = mu * i.normal_load_n;

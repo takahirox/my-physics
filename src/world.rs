@@ -538,7 +538,11 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
     let old_velocity = v.state.linear_velocity_mps;
     if recompute {
         let orientation = v.state.orientation;
-        let up = orientation.rotate(Vec3::Y);
+        let body_up = orientation.rotate(Vec3::Y);
+        // The v0.1 road is a flat height field. Suspension reactions and tire
+        // forces therefore act in its world-up tangent frame; using body-up
+        // fed chassis roll back into lateral/vertical tire force components.
+        let road_normal = Vec3::Y;
         let cg_local = v.cg_local_m();
         let relative_air = v.state.linear_velocity_mps - wind;
         let air_speed = relative_air.length();
@@ -554,7 +558,7 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
                     * air_speed
                     * air_speed);
         }
-        force += -up
+        force += -body_up
             * (0.5
                 * v.definition.chassis.air_density_kg_m3
                 * (-v.definition.chassis.lift_coefficient)
@@ -595,16 +599,22 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             ws.steer_angle_rad = v.control.steering * wdef.max_steer_rad;
             ws.camber_rad = wheel_damage * 0.12 * (if n % 2 == 0 { -1.0 } else { 1.0 });
             let steer_q = Quat::from_axis_angle(Vec3::Y, -ws.steer_angle_rad);
-            let wheel_forward = orientation.rotate(steer_q.rotate(Vec3::FORWARD));
-            let wheel_right = orientation.rotate(steer_q.rotate(Vec3::X));
+            let wheel_heading = orientation.rotate(steer_q.rotate(Vec3::FORWARD));
+            let wheel_forward = Vec3::new(wheel_heading.x, 0.0, wheel_heading.z).normalized();
+            let wheel_right = wheel_forward.cross(road_normal).normalized();
             let contact_velocity = v.state.linear_velocity_mps + v.state.angular_velocity_rad_s.cross(r);
             let longitudinal = contact_velocity.dot(wheel_forward);
             let lateral = contact_velocity.dot(wheel_right);
             ws.longitudinal_slip =
                 (ws.angular_velocity_rad_s * effective_radius - longitudinal) / longitudinal.abs().max(1.0);
             ws.slip_angle_rad = lateral.atan2(longitudinal.abs().max(0.2));
+            let fitted_tire_model = MagicFormulaTire {
+                lateral_stiffness: tire_model.lateral_stiffness * wdef.cornering_stiffness_scale.clamp(0.5, 2.0),
+                peak_mu: tire_model.peak_mu * wdef.tire_peak_grip_scale.clamp(0.5, 2.0),
+                ..tire_model
+            };
             let tire = evaluate_tire(
-                &tire_model,
+                &fitted_tire_model,
                 &mut ws.tire,
                 TireInput {
                     normal_load_n: normal,
@@ -619,11 +629,11 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             ws.last_tire_output = tire;
             let rr_sign =
                 if longitudinal.abs() > 0.1 { longitudinal.signum() } else { ws.angular_velocity_rad_s.signum() };
-            let wheel_force = up * normal
+            let wheel_force = road_normal * normal
                 + wheel_forward * (tire.longitudinal_force_n - tire.rolling_resistance_n * rr_sign)
                 + wheel_right * tire.lateral_force_n;
             force += wheel_force;
-            torque += r.cross(wheel_force) + up * tire.aligning_moment_nm;
+            torque += r.cross(wheel_force) + road_normal * tire.aligning_moment_nm;
             let driven = if wdef.driven { drive_torque / 2.0 } else { 0.0 };
             let brake_effect =
                 (1.0 - 0.72 * ((ws.brake_temperature_k - 850.0) / 300.0).clamp(0.0, 1.0)) * (1.0 - 0.7 * ws.brake_wear);

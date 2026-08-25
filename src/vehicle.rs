@@ -28,6 +28,10 @@ pub struct WheelDefinition {
     pub max_steer_rad: f64,
     pub driven: bool,
     pub brake_torque_nm: f64,
+    /// Relative small-angle lateral stiffness for the fitted tire/wheel.
+    pub cornering_stiffness_scale: f64,
+    /// Relative peak friction for the fitted tire compound/size.
+    pub tire_peak_grip_scale: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -78,6 +82,8 @@ impl Default for VehicleDefinition {
             max_steer_rad: 0.54,
             driven: false,
             brake_torque_nm: 3_800.0,
+            cornering_stiffness_scale: 1.0,
+            tire_peak_grip_scale: 1.0,
         };
         let mut fl = front;
         fl.mount_local_m.x = -0.78;
@@ -86,6 +92,10 @@ impl Default for VehicleDefinition {
             max_steer_rad: 0.0,
             driven: true,
             brake_torque_nm: 3_100.0,
+            // Wider rear fitment gives the reference RWD car a small,
+            // measurable understeer gradient at the adhesion limit.
+            cornering_stiffness_scale: 1.05,
+            tire_peak_grip_scale: 1.06,
             ..front
         };
         let mut rl = rear;

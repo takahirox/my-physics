@@ -18,7 +18,7 @@ use crate::world::{Fidelity, InputFrame, SimulationConfig, Snapshot};
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"MYPHY001";
 const INPUT_MAGIC: &[u8; 8] = b"MYINP001";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_ITEMS: usize = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,13 +48,18 @@ impl std::error::Error for ArchiveError {}
 
 struct Writer {
     bytes: Vec<u8>,
+    version: u32,
 }
 
 impl Writer {
     fn new(magic: &[u8; 8]) -> Self {
-        let mut writer = Self { bytes: Vec::new() };
+        Self::with_version(magic, VERSION)
+    }
+    fn with_version(magic: &[u8; 8], version: u32) -> Self {
+        debug_assert!((1..=VERSION).contains(&version));
+        let mut writer = Self { bytes: Vec::new(), version };
         writer.bytes.extend_from_slice(magic);
-        writer.u32(VERSION);
+        writer.u32(version);
         writer
     }
     fn u8(&mut self, value: u8) {
@@ -89,6 +94,7 @@ impl Writer {
 struct Reader<'a> {
     bytes: &'a [u8],
     position: usize,
+    version: u32,
 }
 
 impl<'a> Reader<'a> {
@@ -104,10 +110,12 @@ impl<'a> Reader<'a> {
         if &bytes[..8] != magic {
             return Err(ArchiveError::BadMagic);
         }
-        let mut reader = Self { bytes: &bytes[..payload_length], position: 8 };
-        if reader.u32()? != VERSION {
+        let mut reader = Self { bytes: &bytes[..payload_length], position: 8, version: 0 };
+        let version = reader.u32()?;
+        if !(1..=VERSION).contains(&version) {
             return Err(ArchiveError::UnsupportedVersion);
         }
+        reader.version = version;
         Ok(reader)
     }
     fn take(&mut self, length: usize) -> Result<&'a [u8], ArchiveError> {
@@ -159,7 +167,11 @@ impl<'a> Reader<'a> {
 }
 
 pub(crate) fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
-    let mut writer = Writer::new(SNAPSHOT_MAGIC);
+    encode_snapshot_version(snapshot, VERSION)
+}
+
+fn encode_snapshot_version(snapshot: &Snapshot, version: u32) -> Vec<u8> {
+    let mut writer = Writer::with_version(SNAPSHOT_MAGIC, version);
     write_config(&mut writer, snapshot.config);
     writer.f64(snapshot.time_s);
     writer.u64(snapshot.step);
@@ -355,6 +367,11 @@ fn write_vehicle(w: &mut Writer, vehicle: &Vehicle) {
     w.bool(vehicle.driver_aids.abs_enabled);
     w.bool(vehicle.driver_aids.traction_control_enabled);
     w.bool(vehicle.driver_aids.stability_control_enabled);
+    if w.version >= 2 {
+        for pressure in vehicle.driver_aids.abs_pressure() {
+            w.f64(pressure);
+        }
+    }
     w.f64(vehicle.driver_aids.integrator());
     write_driver_input(w, vehicle.input);
     write_control_output(w, vehicle.control);
@@ -387,6 +404,9 @@ fn read_vehicle(r: &mut Reader<'_>) -> Result<Vehicle, ArchiveError> {
     driver_aids.abs_enabled = r.bool()?;
     driver_aids.traction_control_enabled = r.bool()?;
     driver_aids.stability_control_enabled = r.bool()?;
+    if r.version >= 2 {
+        driver_aids.set_abs_pressure([r.f64()?, r.f64()?, r.f64()?, r.f64()?]);
+    }
     driver_aids.set_integrator(r.f64()?);
     let input = read_driver_input(r)?;
     let control = read_control_output(r)?;
@@ -503,22 +523,42 @@ fn write_wheel_definition(w: &mut Writer, value: WheelDefinition) {
     }
     w.bool(value.driven);
     w.f64(value.brake_torque_nm);
+    if w.version >= 2 {
+        w.f64(value.cornering_stiffness_scale);
+        w.f64(value.tire_peak_grip_scale);
+    }
 }
 
 fn read_wheel_definition(r: &mut Reader<'_>) -> Result<WheelDefinition, ArchiveError> {
+    let mount_local_m = read_vec3(r)?;
+    let radius_m = r.f64()?;
+    let inertia_kg_m2 = r.f64()?;
+    let mass_kg = r.f64()?;
+    let spring_rate_n_m = r.f64()?;
+    let damper_rate_n_s_m = r.f64()?;
+    let rest_length_m = r.f64()?;
+    let max_travel_m = r.f64()?;
+    let bump_stop_rate_n_m = r.f64()?;
+    let max_steer_rad = r.f64()?;
+    let driven = r.bool()?;
+    let brake_torque_nm = r.f64()?;
+    let cornering_stiffness_scale = if r.version >= 2 { r.f64()? } else { 1.0 };
+    let tire_peak_grip_scale = if r.version >= 2 { r.f64()? } else { 1.0 };
     Ok(WheelDefinition {
-        mount_local_m: read_vec3(r)?,
-        radius_m: r.f64()?,
-        inertia_kg_m2: r.f64()?,
-        mass_kg: r.f64()?,
-        spring_rate_n_m: r.f64()?,
-        damper_rate_n_s_m: r.f64()?,
-        rest_length_m: r.f64()?,
-        max_travel_m: r.f64()?,
-        bump_stop_rate_n_m: r.f64()?,
-        max_steer_rad: r.f64()?,
-        driven: r.bool()?,
-        brake_torque_nm: r.f64()?,
+        mount_local_m,
+        radius_m,
+        inertia_kg_m2,
+        mass_kg,
+        spring_rate_n_m,
+        damper_rate_n_s_m,
+        rest_length_m,
+        max_travel_m,
+        bump_stop_rate_n_m,
+        max_steer_rad,
+        driven,
+        brake_torque_nm,
+        cornering_stiffness_scale,
+        tire_peak_grip_scale,
     })
 }
 
@@ -984,6 +1024,28 @@ fn read_event(r: &mut Reader<'_>) -> Result<FeedbackEvent, ArchiveError> {
         _ => return Err(ArchiveError::InvalidData),
     };
     Ok(FeedbackEvent { time_s, kind, magnitude, wheel })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_snapshot, encode_snapshot_version};
+    use crate::world::PhysicsWorld;
+
+    #[test]
+    fn version_one_snapshot_defaults_new_abs_and_cornering_state() {
+        let snapshot = PhysicsWorld::demo(1).snapshot();
+        let decoded = decode_snapshot(&encode_snapshot_version(&snapshot, 1)).unwrap();
+
+        assert_eq!(decoded.step(), snapshot.step());
+        assert_eq!(decoded.vehicles[0].driver_aids.abs_pressure(), [0.0; 4]);
+        assert!(
+            decoded.vehicles[0]
+                .definition
+                .wheels
+                .iter()
+                .all(|wheel| wheel.cornering_stiffness_scale == 1.0 && wheel.tire_peak_grip_scale == 1.0)
+        );
+    }
 }
 
 fn write_tire_model(w: &mut Writer, value: MagicFormulaTire) {
