@@ -24,3 +24,7 @@ node scripts/benchmark-wasm.mjs
 ```
 
 The live Chromium result is displayed in the demo as `10-CAR BENCH` and exposed as `window.__MY_PHYSICS_BENCHMARK__`.
+
+The metric-detail WebGL scene was also sampled for 180 consecutive frames at approximately 100 km/h on the reference 120 Hz display. It averaged 8.33 ms per frame, with 9.3 ms p95, 9.4 ms maximum and no frame above 25 ms. Approximately 1,350–1,400 visible road-detail, barrier and vehicle box instances were submitted in one WebGL2 instanced draw call. This is a hardware-specific rendering check, separate from the deterministic physics benchmark.
+
+At 100 km/h, 1.9 m curb bands pass at 14.6 Hz and 5 m fence posts at 5.56 Hz. A 5 m cue therefore spans about 10.8 frames at 60 Hz (21.6 frames on the measured 120 Hz display); consecutive Chromium captures 0.16–0.17 simulated seconds apart show about one post interval of physical travel.

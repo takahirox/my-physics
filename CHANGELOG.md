@@ -19,5 +19,6 @@
 - Calibrated the Magic Formula-family dry longitudinal curve to peak at 15% slip with realistic locked-wheel sliding force, and replaced binary ABS release with persistent, snapshot-serialized pressure modulation.
 - Corrected flat-road contact forces to use the road-plane basis and added an explicitly authored rear cornering-stiffness balance, preventing friction-feasible high-g ramps from developing a non-physical roll/contact feedback spin.
 - Advanced snapshots to archive version 2 while retaining version-1 decoding with documented defaults for the new controller and wheel-fit state.
+- Reworked WebGL speed perception without changing physics scale: curbs, fence posts, barrier joints, asphalt patches and rubber detail now follow cumulative circuit distance, while closer chase and hood camera presets are switchable with C or the UI.
 
 The source implementation is complete for the documented v0.1 acceptance matrix. A public release tag and open-source license grant remain pending the owner’s explicitly deferred license decision.

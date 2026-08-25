@@ -15,6 +15,7 @@ The integration suite currently covers:
 | 1000 Hz priority timing | 1000 fixed steps advance both world and player exactly one second |
 | render decoupling | different render batching reaches the identical state |
 | browser motion correspondence | Chromium telemetry confirms rendered world displacement tracks physical speed while camera lag remains bounded |
+| visual speed cues | curb bands, fence posts, asphalt/rubber details and camera presets use tested metric spacing/configuration independent of circuit segment count; Chromium frame-time evidence guards rendering cost |
 | circuit collision correspondence | WebGL road segments and barriers are generated from the same 240-segment, 2.06 km closed spline as the Rust collision core; a remote curved barrier has a regression test |
 | circuit scale envelope | sampled centerline radius is required to remain at least 25 m; the current minimum is 26.41 m, corresponding to about 62 km/h at 1.15 g |
 | complete-lap behavior | `cargo run --release --example circuit_lap` requires a damage-free lap inside the safe lateral envelope and reports lap time, speed and line error |

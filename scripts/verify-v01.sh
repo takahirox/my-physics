@@ -6,6 +6,8 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 node --check web/demo.js
+node --check web/visual-config.mjs
+node --test tests/web_visual_config.mjs
 ./scripts/build-wasm.sh
 node scripts/test-wasm-controller-snapshot.mjs
 node scripts/benchmark-wasm.mjs

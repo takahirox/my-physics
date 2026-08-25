@@ -22,7 +22,7 @@ My Physics is a deterministic, headless-first vehicle and motorsport physics eng
 - Ten-vehicle 2.06 km closed racing circuit with a numerically guarded 26.4 m minimum centerline radius, synchronized physical barriers, deterministic AI line following and smoothly changing physics LOD
 - Complete versioned/checksummed snapshot archives, persistent timed input history, restore and deterministic re-simulation
 - Detailed telemetry, expanded headless CSV, continuous Audio/FFB frames and discrete physical events
-- Raw WebAssembly API and rendering-independent WebGL2 3D chase-camera demo with curbs, catch fencing, grids, gantries and grandstands
+- Raw WebAssembly API and rendering-independent WebGL2 3D demo with metric-spaced track detail plus switchable close chase and hood cameras
 
 ## Run it
 
@@ -34,7 +34,7 @@ cargo test --all-targets
 ./scripts/serve-web.sh
 ```
 
-Open <http://localhost:8080>. Drive a complete lap with WASD or arrow keys; keyboard steering starts in simulator-strict raw mode, so A/D immediately requests the full physical rack angle at every speed. Press I to opt into the deterministic speed-sensitive keyboard assist (or open `?keyboardAssist=1`), P to toggle the AI driver (or `?autopilot=1`), and E to toggle race-preset ESC. Gamepad and wheel axes remain raw. Use Shift for the clutch, Space for the handbrake, T for automatic mode, R to reset, 1–6 to request a gear, and K/L to save/restore a snapshot. Standard gamepads and common wheel/pedal identifiers are detected through the Gamepad API; axis indices can be overridden with URL parameters such as `?steerAxis=0&throttleAxis=1&brakeAxis=2&clutchAxis=3`.
+Open <http://localhost:8080>. Drive a complete lap with WASD or arrow keys; keyboard steering starts in simulator-strict raw mode, so A/D immediately requests the full physical rack angle at every speed. Press C (or use the Camera selector) to alternate the close chase and hood presets; `?camera=hood` selects the near view on load. Camera state is visual-only and is not stored in a physics snapshot. Press I to opt into the deterministic speed-sensitive keyboard assist (or open `?keyboardAssist=1`), P to toggle the AI driver (or `?autopilot=1`), and E to toggle race-preset ESC. Gamepad and wheel axes remain raw. Use Shift for the clutch, Space for the handbrake, T for automatic mode, R to reset, 1–6 to request a gear, and K/L to save/restore a snapshot. Standard gamepads and common wheel/pedal identifiers are detected through the Gamepad API; axis indices can be overridden with URL parameters such as `?steerAxis=0&throttleAxis=1&brakeAxis=2&clutchAxis=3`.
 
 For a rendering-free simulation and CSV telemetry:
 

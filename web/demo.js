@@ -1,7 +1,15 @@
+import {
+  CAMERA_PRESET_ORDER,
+  VISUAL_CUES,
+  cameraSettings,
+  metricIntervals,
+  metricSamples,
+} from './visual-config.mjs';
+
 const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
 const ui = Object.fromEntries(
-  ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality'].map(
+  ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality', 'cameraPreset'].map(
     (id) => [id, document.querySelector(`#${id}`)],
   ),
 );
@@ -12,6 +20,13 @@ let accumulator = 0;
 let gear = 0;
 let completedLaps = 0;
 let previousProgress;
+let cameraPreset = 'chase';
+
+function selectCameraPreset(name) {
+  cameraPreset = CAMERA_PRESET_ORDER.includes(name) ? name : 'chase';
+  if (ui.cameraPreset) ui.cameraPreset.value = cameraPreset;
+  if (renderer) renderer.eye = null;
+}
 
 addEventListener('keydown', (event) => {
   keys.add(event.code);
@@ -30,6 +45,10 @@ addEventListener('keydown', (event) => {
   }
   if (event.code === 'KeyI' && api && !event.repeat) {
     api.physics_set_keyboard_assist(api.physics_keyboard_assist() ? 0 : 1);
+  }
+  if (event.code === 'KeyC' && !event.repeat) {
+    const current = CAMERA_PRESET_ORDER.indexOf(cameraPreset);
+    selectCameraPreset(CAMERA_PRESET_ORDER[(current + 1) % CAMERA_PRESET_ORDER.length]);
   }
   if (event.code === 'KeyK' && api) {
     const bytes = api.physics_snapshot_save();
@@ -139,6 +158,44 @@ void main() {
   outputColor = vec4(mix(lit, vec3(0.055, 0.085, 0.065), fog), color.a);
 }`;
 
+const instancedVertexShader = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 position;
+layout(location=1) in vec3 normal;
+layout(location=2) in vec4 model0;
+layout(location=3) in vec4 model1;
+layout(location=4) in vec4 model2;
+layout(location=5) in vec4 model3;
+layout(location=6) in vec4 instanceColor;
+uniform mat4 viewProjection;
+out vec3 worldNormal;
+out vec3 worldPosition;
+out vec4 boxColor;
+void main() {
+  mat4 model = mat4(model0, model1, model2, model3);
+  vec4 world = model * vec4(position, 1.0);
+  worldPosition = world.xyz;
+  worldNormal = normalize(mat3(model) * normal);
+  boxColor = instanceColor;
+  gl_Position = viewProjection * world;
+}`;
+
+const instancedFragmentShader = `#version 300 es
+precision highp float;
+uniform vec3 cameraPosition;
+in vec3 worldNormal;
+in vec3 worldPosition;
+in vec4 boxColor;
+out vec4 outputColor;
+void main() {
+  vec3 sun = normalize(vec3(-0.35, 0.9, 0.28));
+  float diffuse = 0.34 + 0.66 * max(dot(normalize(worldNormal), sun), 0.0);
+  float distanceToCamera = length(worldPosition - cameraPosition);
+  float fog = smoothstep(95.0, 260.0, distanceToCamera);
+  vec3 lit = boxColor.rgb * diffuse;
+  outputColor = vec4(mix(lit, vec3(0.055, 0.085, 0.065), fog), boxColor.a);
+}`;
+
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -147,10 +204,10 @@ function compileShader(gl, type, source) {
   return shader;
 }
 
-function createProgram(gl) {
+function createProgram(gl, vertexSource = vertexShader, fragmentSource = fragmentShader) {
   const program = gl.createProgram();
-  gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, vertexShader));
-  gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, fragmentShader));
+  gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, vertexSource));
+  gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource));
   gl.linkProgram(program);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
   return program;
@@ -238,6 +295,9 @@ class Renderer3D {
     this.model = gl.getUniformLocation(this.program, 'model');
     this.color = gl.getUniformLocation(this.program, 'color');
     this.cameraPosition = gl.getUniformLocation(this.program, 'cameraPosition');
+    this.instancedProgram = createProgram(gl, instancedVertexShader, instancedFragmentShader);
+    this.instancedViewProjection = gl.getUniformLocation(this.instancedProgram, 'viewProjection');
+    this.instancedCameraPosition = gl.getUniformLocation(this.instancedProgram, 'cameraPosition');
     this.vertexArray = gl.createVertexArray();
     gl.bindVertexArray(this.vertexArray);
     const buffer = gl.createBuffer();
@@ -249,11 +309,24 @@ class Renderer3D {
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+    this.instanceBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+    for (let column = 0; column < 4; column += 1) {
+      const location = 2 + column;
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 80, column * 16);
+      gl.vertexAttribDivisor(location, 1);
+    }
+    gl.enableVertexAttribArray(6);
+    gl.vertexAttribPointer(6, 4, gl.FLOAT, false, 80, 64);
+    gl.vertexAttribDivisor(6, 1);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     this.eye = null;
+    this.drawCalls = 0;
+    this.instances = null;
   }
 
   resize() {
@@ -270,10 +343,37 @@ class Renderer3D {
   }
 
   box(position, scale, color, yaw = 0) {
+    if (this.instances) {
+      this.instances.push(...modelMatrix(position, scale, yaw), ...color);
+      return;
+    }
     const gl = this.gl;
     gl.uniformMatrix4fv(this.model, false, modelMatrix(position, scale, yaw));
     gl.uniform4fv(this.color, color);
     gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+    this.drawCalls += 1;
+  }
+
+  beginBatch() {
+    this.instances = [];
+  }
+
+  flushBatch(viewProjection, cameraPosition) {
+    const instanceCount = this.instances.length / 20;
+    if (!instanceCount) {
+      this.instances = null;
+      return;
+    }
+    const gl = this.gl;
+    gl.useProgram(this.instancedProgram);
+    gl.bindVertexArray(this.vertexArray);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(this.instances), gl.DYNAMIC_DRAW);
+    gl.uniformMatrix4fv(this.instancedViewProjection, false, viewProjection);
+    gl.uniform3fv(this.instancedCameraPosition, cameraPosition);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, this.vertexCount, instanceCount);
+    this.drawCalls += 1;
+    this.instances = null;
   }
 
   localPoint(position, yaw, local) {
@@ -312,11 +412,24 @@ class Renderer3D {
 
   raceCourse(physics, playerPosition, trackHalfWidth) {
     if (!this.circuit) {
-      this.circuit = Array.from({ length: physics.physics_track_segment_count() }, (_, index) => ({
-        position: [physics.physics_track_segment_x(index), 0, physics.physics_track_segment_z(index)],
-        yaw: physics.physics_track_segment_yaw(index),
-        length: physics.physics_track_segment_length(index),
-      }));
+      let cumulativeDistanceM = 0;
+      this.circuit = Array.from({ length: physics.physics_track_segment_count() }, (_, index) => {
+        const length = physics.physics_track_segment_length(index);
+        const segment = {
+          position: [physics.physics_track_segment_x(index), 0, physics.physics_track_segment_z(index)],
+          yaw: physics.physics_track_segment_yaw(index),
+          length,
+          distanceStartM: cumulativeDistanceM,
+          curbBands: metricIntervals(cumulativeDistanceM, length, VISUAL_CUES.curbBandM),
+          fencePosts: metricSamples(cumulativeDistanceM, length, VISUAL_CUES.fencePostM),
+          seams: metricSamples(cumulativeDistanceM, length, VISUAL_CUES.asphaltSeamM, 0.7),
+          patches: metricSamples(cumulativeDistanceM, length, VISUAL_CUES.asphaltPatchM, 1.3),
+          rubber: metricSamples(cumulativeDistanceM, length, VISUAL_CUES.rubberDashM, 0.9),
+          boards: metricSamples(cumulativeDistanceM, length, 200, 100),
+        };
+        cumulativeDistanceM += length;
+        return segment;
+      });
     }
     const roadWidth = trackHalfWidth * 2;
     this.box([0, -0.22, 0], [760, 0.32, 760], rgb('#18351d'));
@@ -330,21 +443,60 @@ class Renderer3D {
       this.box([midpoint[0], -0.015, midpoint[2]], [roadWidth, 0.08, joinLength], rgb('#202522'), segment.yaw);
       this.box(this.localPoint(midpoint, segment.yaw, [-trackHalfWidth + 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.yaw);
       this.box(this.localPoint(midpoint, segment.yaw, [trackHalfWidth - 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.yaw);
-      for (const rubber of [-0.88, 0.88]) {
-        this.box(this.localPoint(midpoint, segment.yaw, [rubber, 0.032, 0]), [0.07, 0.014, joinLength * 0.82], rgb('#111512'), segment.yaw);
-      }
       for (const side of [-1, 1]) {
-        const curbColor = index % 4 < 2 ? rgb('#f4f2e9') : rgb('#d9342b');
-        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth - 0.3), 0.07, 0]), [0.6, 0.1, joinLength], curbColor, segment.yaw);
         this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.3), 0.34, 0]), [0.6, 0.68, joinLength], rgb('#bcc3be'), segment.yaw);
         this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.62), 0.24, 0]), [0.035, 0.26, joinLength], rgb('#59615d'), segment.yaw);
-        if (index % 4 === 0) {
-          this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.72), 1.45, 0]), [0.09, 2.9, 0.09], rgb('#77817c'), segment.yaw);
-          this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.72), 2.3, -segment.length * 1.8]), [0.055, 0.055, segment.length * 3.6], rgb('#8c9691'), segment.yaw);
+        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.72), 2.3, 0]), [0.055, 0.055, joinLength], rgb('#8c9691'), segment.yaw);
+      }
+      if (distance <= VISUAL_CUES.detailRadiusM) {
+        for (const band of segment.curbBands) {
+          const curbColor = band.band % 2 ? rgb('#d9342b') : rgb('#f4f2e9');
+          for (const side of [-1, 1]) {
+            this.box(
+              this.localPoint(segment.position, segment.yaw, [side * (trackHalfWidth - 0.3), 0.07, -band.centerM]),
+              [0.6, 0.1, band.lengthM + VISUAL_CUES.curbJoinOverlapM],
+              curbColor,
+              segment.yaw,
+            );
+          }
+        }
+        for (const sample of segment.fencePosts) {
+          for (const side of [-1, 1]) {
+            const point = this.localPoint(segment.position, segment.yaw, [side * (trackHalfWidth + 0.72), 0, -sample.localM]);
+            this.box([point[0], 1.45, point[2]], [0.09, 2.9, 0.09], rgb('#77817c'), segment.yaw);
+          }
+        }
+        for (const sample of segment.seams) {
+          const seamLane = ((sample.index * 3) % 5 - 2) * 1.45;
+          this.box(
+            this.localPoint(segment.position, segment.yaw, [seamLane, 0.033, -sample.localM]),
+            [2.1 + (Math.abs(sample.index) % 3) * 0.45, 0.012, 0.04],
+            rgb('#151a17', 0.58),
+            segment.yaw,
+          );
+        }
+        for (const sample of segment.patches) {
+          const lane = ((sample.index % 4) - 1.5) * 1.35;
+          this.box(
+            this.localPoint(segment.position, segment.yaw, [lane, 0.029, -sample.localM]),
+            [1.05, 0.01, 1.35],
+            rgb(sample.index % 3 ? '#252b27' : '#1b211e', 0.72),
+            segment.yaw,
+          );
+        }
+        for (const sample of segment.rubber) {
+          for (const rubber of [-0.88, 0.88]) {
+            this.box(
+              this.localPoint(segment.position, segment.yaw, [rubber, 0.036, -sample.localM]),
+              [0.09, 0.014, 2.1],
+              rgb('#0e1210', 0.86),
+              segment.yaw,
+            );
+          }
         }
       }
-      if (index % 24 === 0 && index !== 0) {
-        const board = this.localPoint(segment.position, segment.yaw, [trackHalfWidth + 1.25, 0, 0]);
+      for (const sample of segment.boards) {
+        const board = this.localPoint(segment.position, segment.yaw, [trackHalfWidth + 1.25, 0, -sample.localM]);
         this.box([board[0], 1.0, board[2]], [0.1, 2.0, 0.1], rgb('#707873'), segment.yaw);
         this.box([board[0], 2.05, board[2]], [1.05, 0.75, 0.16], rgb('#f0f1eb'), segment.yaw);
       }
@@ -379,19 +531,23 @@ class Renderer3D {
     const yaw = physics.physics_render_yaw(0, alpha);
     const speedMps = physics.physics_speed(0);
     const forward = [-Math.sin(yaw), 0, -Math.cos(yaw)];
-    const speedRatio = Math.min(speedMps / 65, 1);
-    const desiredEye = [x - forward[0] * 8.8, y + 4.2 - speedRatio * 0.45, z - forward[2] * 8.8];
+    const camera = cameraSettings(cameraPreset, speedMps);
+    const desiredEye = [x - forward[0] * camera.backM, y + camera.heightM, z - forward[2] * camera.backM];
     if (!this.eye) this.eye = desiredEye;
-    const cameraBlend = 1 - Math.exp(-elapsed * 9.0);
+    const cameraBlend = 1 - Math.exp(-elapsed * camera.responsePerS);
     this.eye = this.eye.map((value, index) => value + (desiredEye[index] - value) * cameraBlend);
     const cameraError = desiredEye.map((value, index) => value - this.eye[index]);
     const unclampedCameraLag = Math.hypot(...cameraError);
-    if (unclampedCameraLag > 2.2) {
-      this.eye = desiredEye.map((value, index) => value - (cameraError[index] / unclampedCameraLag) * 2.2);
+    if (unclampedCameraLag > camera.maxLagM) {
+      this.eye = desiredEye.map((value, index) => value - (cameraError[index] / unclampedCameraLag) * camera.maxLagM);
     }
     const cameraLag = Math.hypot(...desiredEye.map((value, index) => value - this.eye[index]));
-    const target = [x + forward[0] * 6.4, y + 0.15, z + forward[2] * 6.4];
-    const fieldOfViewDegrees = 58 + speedRatio * 16;
+    const target = [
+      x + forward[0] * camera.targetAheadM,
+      y + camera.targetHeightM,
+      z + forward[2] * camera.targetAheadM,
+    ];
+    const fieldOfViewDegrees = camera.fieldOfViewDegrees;
     const projection = perspective((fieldOfViewDegrees * Math.PI) / 180, aspect, 0.08, 700);
     const view = lookAt(this.eye, target);
 
@@ -405,6 +561,7 @@ class Renderer3D {
       cameraPosition: [...this.eye],
       cameraLag,
       fieldOfViewDegrees,
+      cameraPreset,
     };
 
     gl.clearColor(0.052, 0.08, 0.061, 1);
@@ -413,6 +570,8 @@ class Renderer3D {
     gl.bindVertexArray(this.vertexArray);
     gl.uniformMatrix4fv(this.viewProjection, false, multiply(projection, view));
     gl.uniform3fv(this.cameraPosition, this.eye);
+    this.drawCalls = 0;
+    this.beginBatch();
 
     this.raceCourse(physics, [x, y, z], physics.physics_track_half_width());
 
@@ -425,6 +584,8 @@ class Renderer3D {
       ];
       this.car(position, physics.physics_render_yaw(index, alpha), rgb(colors[index % colors.length]), index === 0);
     }
+    this.flushBatch(multiply(projection, view), this.eye);
+    window.__MY_PHYSICS_FRAME__.drawCalls = this.drawCalls;
   }
 }
 
@@ -524,6 +685,8 @@ try {
     const level = ui.quality.value === 'auto' ? Number(ui.quality.dataset.automatic || 2) : Number(ui.quality.value);
     api.physics_set_quality(level);
   });
+  ui.cameraPreset.addEventListener('change', () => selectCameraPreset(ui.cameraPreset.value));
+  selectCameraPreset(new URLSearchParams(location.search).get('camera') || 'chase');
   benchmarkPhysics();
   if (new URLSearchParams(location.search).get('keyboardAssist') === '1') api.physics_set_keyboard_assist(1);
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
