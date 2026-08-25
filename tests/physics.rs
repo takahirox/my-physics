@@ -186,6 +186,35 @@ fn assisted_keyboard_response_is_monotonic_and_avoids_extreme_slip() {
 }
 
 #[test]
+fn gamepad_profile_targets_are_symmetric_monotonic_and_within_lateral_envelope() {
+    const WHEELBASE_M: f64 = 2.51;
+    const MAX_STEER_RAD: f64 = 0.54;
+    for target_mps2 in [7.5, 10.0] {
+        for speed_kmh in [50.0, 100.0, 140.0] {
+            let speed_mps = speed_kmh / 3.6;
+            let settled = |command: f64| {
+                let mut assist = KeyboardSteeringAssist::default();
+                for _ in 0..2_000 {
+                    assist.update_for_target(command, speed_mps, 0.001, target_mps2);
+                }
+                assist.output()
+            };
+            let half = settled(0.5);
+            let full = settled(1.0);
+            let left = settled(-1.0);
+            assert!(full >= half && half > 0.0, "target={target_mps2}, speed={speed_kmh}, half={half}, full={full}");
+            assert!((full + left).abs() < 1.0e-12, "profile policy must remain left/right symmetric");
+            let requested = speed_mps.powi(2) * (full * MAX_STEER_RAD).tan() / WHEELBASE_M;
+            assert!(requested <= target_mps2 * 1.05, "target={target_mps2}, speed={speed_kmh}, requested={requested}");
+            if speed_kmh == 100.0 {
+                let half_requested = speed_mps.powi(2) * (half * MAX_STEER_RAD).tan() / WHEELBASE_M;
+                assert!(half_requested <= target_mps2 * 0.55, "100 km/h half-pad exceeded profile envelope");
+            }
+        }
+    }
+}
+
+#[test]
 fn digital_keyboard_controller_completes_full_size_circuit_without_damage() {
     assert!((1_500.0..2_200.0).contains(&total_length_m()));
     assert!(minimum_radius_m() >= 25.0);

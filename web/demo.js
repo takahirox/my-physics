@@ -20,7 +20,7 @@ import {
 const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
 const ui = Object.fromEntries(
-  ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality', 'cameraPreset', 'keyboardPolicy', 'inputResponse', 'calibrationStatus'].map(
+  ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality', 'cameraPreset', 'driveProfile', 'keyboardPolicy', 'inputResponse', 'calibrationStatus'].map(
     (id) => [id, document.querySelector(`#${id}`)],
   ),
 );
@@ -50,11 +50,21 @@ function persistInputConfig() {
   }
 }
 
-function setKeyboardAdaptive(enabled, persist = true) {
-  inputConfig = { ...inputConfig, keyboardAdaptive: enabled };
-  if (ui.keyboardPolicy) ui.keyboardPolicy.value = enabled ? 'adaptive' : 'raw';
-  if (api) api.physics_set_keyboard_assist(enabled ? 1 : 0);
+const DRIVE_PROFILES = ['accessible', 'sport', 'simulation'];
+const PROFILE_INDEX = Object.freeze({ accessible: 0, sport: 1, simulation: 2 });
+
+function setDriveProfile(requested, persist = true) {
+  const driveProfile = DRIVE_PROFILES.includes(requested) ? requested : 'sport';
+  const keyboardAdaptive = driveProfile !== 'simulation';
+  inputConfig = { ...inputConfig, driveProfile, keyboardAdaptive };
+  if (ui.driveProfile) ui.driveProfile.value = driveProfile;
+  if (ui.keyboardPolicy) ui.keyboardPolicy.value = keyboardAdaptive ? 'adaptive' : 'raw';
+  if (api) api.physics_set_experience_profile(PROFILE_INDEX[driveProfile]);
   if (persist) persistInputConfig();
+}
+
+function setKeyboardAdaptive(enabled, persist = true) {
+  setDriveProfile(enabled ? (inputConfig.driveProfile === 'accessible' ? 'accessible' : 'sport') : 'simulation', persist);
 }
 
 function selectCameraPreset(name) {
@@ -69,7 +79,7 @@ addEventListener('keydown', (event) => {
   if (event.code === 'KeyT') gear = 0;
   if (event.code === 'KeyR') {
     api?.physics_reset();
-    if (api) api.physics_set_keyboard_assist(inputConfig.keyboardAdaptive ? 1 : 0);
+    if (api) api.physics_set_experience_profile(PROFILE_INDEX[inputConfig.driveProfile] ?? 1);
     completedLaps = 0;
     previousProgress = undefined;
   }
@@ -80,7 +90,7 @@ addEventListener('keydown', (event) => {
     api.physics_set_player_esc(api.physics_player_esc() ? 0 : 1);
   }
   if (event.code === 'KeyI' && api && !event.repeat) {
-    setKeyboardAdaptive(!api.physics_keyboard_assist());
+    setDriveProfile(inputConfig.driveProfile === 'simulation' ? 'sport' : 'simulation');
   }
   if (event.code === 'KeyC' && !event.repeat) {
     const current = CAMERA_PRESET_ORDER.indexOf(cameraPreset);
@@ -686,8 +696,11 @@ function updateUi() {
   const damage = api.physics_damage(0);
   ui.damage.style.width = `${damage * 100}%`;
   ui.damageText.textContent = `${Math.round(damage * 100)}%`;
-  const adaptive = api.physics_keyboard_assist() !== 0;
-  inputConfig = { ...inputConfig, keyboardAdaptive: adaptive };
+  const profileIndex = api.physics_experience_profile();
+  const driveProfile = DRIVE_PROFILES[profileIndex] || 'sport';
+  const adaptive = driveProfile !== 'simulation';
+  inputConfig = { ...inputConfig, driveProfile, keyboardAdaptive: adaptive };
+  ui.driveProfile.value = driveProfile;
   ui.keyboardPolicy.value = adaptive ? 'adaptive' : 'raw';
   ui.tires.innerHTML = [0, 1, 2, 3]
     .map(
@@ -740,10 +753,17 @@ function frame(now) {
   accumulator += elapsed;
   const input = inputAdapter.read();
   const escStatus = api.physics_player_esc() ? 'ESC ON' : 'ESC OFF';
+  const profileName = inputConfig.driveProfile.toUpperCase();
+  const targetG = api.physics_policy_lateral_accel_target() / 9.80665;
+  const targetLabel = targetG > 0 ? ` · ${targetG.toFixed(2)}G TARGET` : '';
   const steeringMode = input.deviceKind === 1
-    ? api.physics_keyboard_assist() ? 'ADAPTIVE KEYBOARD' : 'DIGITAL RAW/TEST'
-    : input.deviceKind === 3 ? 'CALIBRATED WHEEL · 1:1 RAW' : `${inputConfig.response.toUpperCase()} GAMEPAD`;
-  const keyboardToggleHint = input.deviceKind === 1 ? ' · I' : '';
+    ? api.physics_keyboard_assist() ? `${profileName} ADAPTIVE KEYBOARD${targetLabel}` : 'SIMULATION DIGITAL RAW/TEST'
+    : input.deviceKind === 3
+      ? 'CALIBRATED WHEEL · LINEAR 1:1 · NO SPEED ASSIST'
+      : inputConfig.driveProfile === 'simulation'
+        ? `${inputConfig.response.toUpperCase()} GAMEPAD · NORMALIZED RAW · NO SPEED ASSIST`
+        : `${profileName} ${inputConfig.response.toUpperCase()} GAMEPAD · SPEED POLICY${targetLabel}`;
+  const keyboardToggleHint = input.deviceKind === 1 ? ' · I: SPORT/SIM' : '';
   ui.inputDevice.textContent = api.physics_player_autopilot()
     ? `AI DRIVER · P · ${escStatus}`
     : `${input.device} · ${steeringMode}${keyboardToggleHint} · ${escStatus} · E`;
@@ -779,6 +799,9 @@ function frame(now) {
     device: input.device,
     keyboardSteering: input.keyboardSteering,
     keyboardAssist: api.physics_keyboard_assist() !== 0,
+    experienceProfile: DRIVE_PROFILES[api.physics_experience_profile()] || 'sport',
+    lateralAccelTargetMps2: api.physics_policy_lateral_accel_target(),
+    gamepadAssist: api.physics_gamepad_assist() !== 0,
     steer: input.steer,
     throttle: input.throttle,
     brake: input.brake,
@@ -816,6 +839,7 @@ try {
     api.physics_set_quality(level);
   });
   ui.cameraPreset.addEventListener('change', () => selectCameraPreset(ui.cameraPreset.value));
+  ui.driveProfile.addEventListener('change', () => setDriveProfile(ui.driveProfile.value));
   ui.keyboardPolicy.addEventListener('change', () => setKeyboardAdaptive(ui.keyboardPolicy.value === 'adaptive'));
   ui.inputResponse.addEventListener('change', () => {
     inputConfig = { ...inputConfig, response: ui.inputResponse.value === 'direct' ? 'direct' : 'balanced' };
@@ -834,7 +858,8 @@ try {
   document.querySelector('#resetCalibration').addEventListener('click', () => {
     inputConfig = {
       ...DEFAULT_INPUT_CONFIG,
-      keyboardAdaptive: inputConfig.keyboardAdaptive,
+      driveProfile: inputConfig.driveProfile,
+      keyboardAdaptive: inputConfig.driveProfile !== 'simulation',
       response: inputConfig.response,
     };
     persistInputConfig();
@@ -842,9 +867,10 @@ try {
   });
   selectCameraPreset(new URLSearchParams(location.search).get('camera') || 'chase');
   ui.inputResponse.value = inputConfig.response;
+  ui.driveProfile.value = inputConfig.driveProfile;
   ui.calibrationStatus.textContent = inputConfig.calibratedDevice ? `SAVED · ${inputConfig.calibratedDevice}` : 'DEFAULT RANGE';
   benchmarkPhysics();
-  setKeyboardAdaptive(inputConfig.keyboardAdaptive, false);
+  setDriveProfile(inputConfig.driveProfile, false);
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
   status.textContent = '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
   status.classList.add('ready');

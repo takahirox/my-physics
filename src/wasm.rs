@@ -12,7 +12,14 @@ static SAVED_SNAPSHOT: OnceLock<Mutex<Option<SavedBrowserState>>> = OnceLock::ne
 static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
 static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
 static KEYBOARD_ASSIST_ENABLED: AtomicBool = AtomicBool::new(true);
+static EXPERIENCE_PROFILE: AtomicU8 = AtomicU8::new(1);
 static KEYBOARD: OnceLock<Mutex<KeyboardInputState>> = OnceLock::new();
+
+const PROFILE_ACCESSIBLE: u8 = 0;
+const PROFILE_SPORT: u8 = 1;
+const PROFILE_SIMULATION: u8 = 2;
+const ACCESSIBLE_LATERAL_ACCEL_MPS2: f64 = 7.5;
+const SPORT_LATERAL_ACCEL_MPS2: f64 = 10.0;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct InputPipelineState {
@@ -39,6 +46,7 @@ struct SavedBrowserState {
     player_input_mode: u8,
     player_autopilot: bool,
     keyboard_assist_enabled: bool,
+    experience_profile: u8,
 }
 
 fn keyboard() -> &'static Mutex<KeyboardInputState> {
@@ -61,12 +69,21 @@ fn yaw(q: Quat) -> f64 {
     (2.0 * (q.w * q.y + q.x * q.z)).atan2(1.0 - 2.0 * (q.y * q.y + q.x * q.x))
 }
 
+fn profile_lateral_accel_target(profile: u8) -> Option<f64> {
+    match profile {
+        PROFILE_ACCESSIBLE => Some(ACCESSIBLE_LATERAL_ACCEL_MPS2),
+        PROFILE_SPORT => Some(SPORT_LATERAL_ACCEL_MPS2),
+        _ => None,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_reset() {
     with_world(|w| *w = PhysicsWorld::demo(10));
     PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
     PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
     KEYBOARD_ASSIST_ENABLED.store(true, Ordering::Relaxed);
+    EXPERIENCE_PROFILE.store(PROFILE_SPORT, Ordering::Relaxed);
     let mut state = KeyboardInputState::default();
     state.pipeline.device_kind = 1;
     *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = state;
@@ -175,11 +192,25 @@ pub extern "C" fn physics_step(steps: u32) {
                 let speed = w.vehicles.first().map_or(0.0, |vehicle| vehicle.telemetry.speed_mps);
                 let mut keyboard = keyboard().lock().unwrap_or_else(|error| error.into_inner());
                 let command = keyboard.command;
-                let assist_enabled = input_mode == 1 && KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed);
+                let profile = EXPERIENCE_PROFILE.load(Ordering::Relaxed);
+                let device_kind = keyboard.pipeline.device_kind;
+                let keyboard_assist = input_mode == 1 && KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed);
+                let gamepad_assist = input_mode == 2 && device_kind == 2 && profile != PROFILE_SIMULATION;
+                let assist_enabled = keyboard_assist || gamepad_assist;
+                let target_lateral_accel = profile_lateral_accel_target(profile).unwrap_or(SPORT_LATERAL_ACCEL_MPS2);
                 let steering = if assist_enabled || keyboard.transitioning {
                     let policy_speed = if assist_enabled { speed } else { 0.0 };
-                    let output = keyboard.assist.update(command.steering, policy_speed, w.config.fixed_dt_s);
-                    let target = command.steering * crate::controls::speed_sensitive_steering_limit(policy_speed);
+                    let output = keyboard.assist.update_for_target(
+                        command.steering,
+                        policy_speed,
+                        w.config.fixed_dt_s,
+                        target_lateral_accel,
+                    );
+                    let target = command.steering
+                        * crate::controls::speed_sensitive_steering_limit_for_target(
+                            policy_speed,
+                            target_lateral_accel,
+                        );
                     if keyboard.transitioning && (output - target).abs() <= 1.0e-9 {
                         keyboard.transitioning = false;
                     }
@@ -261,6 +292,41 @@ pub extern "C" fn physics_set_player_esc(enabled: u32) {
             vehicle.driver_aids.stability_control_enabled = enabled != 0;
         }
     });
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_set_experience_profile(profile: u32) {
+    let profile = (profile as u8).clamp(PROFILE_ACCESSIBLE, PROFILE_SIMULATION);
+    let changed = EXPERIENCE_PROFILE.swap(profile, Ordering::Relaxed) != profile;
+    KEYBOARD_ASSIST_ENABLED.store(profile != PROFILE_SIMULATION, Ordering::Relaxed);
+    let input_mode = PLAYER_INPUT_MODE.load(Ordering::Relaxed);
+    with_world(|world| {
+        if let Some(vehicle) = world.vehicles.first_mut() {
+            // Profiles configure controllers only. ABS/TC retain the authored
+            // vehicle configuration; Accessible additionally enables ESC.
+            vehicle.driver_aids.stability_control_enabled = profile == PROFILE_ACCESSIBLE;
+        }
+        if changed {
+            let current = world.vehicles.first().map_or(0.0, |vehicle| vehicle.input.steering);
+            let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+            let active_policy_changes = input_mode == 1 || (input_mode == 2 && state.pipeline.device_kind == 2);
+            if active_policy_changes {
+                state.assist.set_output(current);
+                state.transitioning = true;
+            }
+        }
+    });
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_experience_profile() -> u32 {
+    u32::from(EXPERIENCE_PROFILE.load(Ordering::Relaxed))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_policy_lateral_accel_target() -> f64 {
+    profile_lateral_accel_target(EXPERIENCE_PROFILE.load(Ordering::Relaxed)).unwrap_or(0.0)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_gamepad_assist() -> u32 {
+    u32::from(EXPERIENCE_PROFILE.load(Ordering::Relaxed) != PROFILE_SIMULATION)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_set_keyboard_assist(enabled: u32) {
@@ -486,6 +552,7 @@ pub extern "C" fn physics_snapshot_save() -> u32 {
         player_input_mode: PLAYER_INPUT_MODE.load(Ordering::Relaxed),
         player_autopilot: PLAYER_AUTOPILOT.load(Ordering::Relaxed),
         keyboard_assist_enabled: KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed),
+        experience_profile: EXPERIENCE_PROFILE.load(Ordering::Relaxed),
     });
     let size = state.world.to_bytes().len();
     let mut saved = saved_snapshot().lock().unwrap_or_else(|error| error.into_inner());
@@ -504,6 +571,7 @@ pub extern "C" fn physics_snapshot_restore() -> u32 {
         PLAYER_INPUT_MODE.store(state.player_input_mode, Ordering::Relaxed);
         PLAYER_AUTOPILOT.store(state.player_autopilot, Ordering::Relaxed);
         KEYBOARD_ASSIST_ENABLED.store(state.keyboard_assist_enabled, Ordering::Relaxed);
+        EXPERIENCE_PROFILE.store(state.experience_profile, Ordering::Relaxed);
     });
     1
 }

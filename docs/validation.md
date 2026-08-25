@@ -58,7 +58,7 @@ The integration suite currently covers:
 | Test | Evidence |
 |---|---|
 | deterministic repeatability | independent runs produce the same full-state fingerprint |
-| snapshot/replay equivalence | restore plus timed inputs reaches the original fingerprint; the WASM K/L fixture also restores keyboard slew/command, input mode and autopilot before reproducing all public physical values |
+| snapshot/replay equivalence | restore plus timed inputs reaches the original fingerprint; the WASM K/L fixture also restores controller slew/command, profile, ESC, input mode and autopilot before reproducing all public physical values |
 | 1000 Hz priority timing | 1000 fixed steps advance both world and player exactly one second |
 | render decoupling | different render batching reaches the identical state |
 | browser motion correspondence | Chromium telemetry confirms rendered world displacement tracks physical speed while camera lag remains bounded |
@@ -67,8 +67,8 @@ The integration suite currently covers:
 | circuit scale envelope | sampled centerline radius is required to remain at least 25 m; the current minimum is 26.41 m, corresponding to about 62 km/h at 1.15 g |
 | complete-lap behavior | `cargo run --release --example circuit_lap` requires a damage-free lap inside the safe lateral envelope and reports lap time, speed and line error |
 | input pipeline | raw, normalized, policy, plant and aid stages carry sample/physics-step numbers; snapshots restore all controller stages, while 30/60/120/144 Hz application grouping reaches identical public state |
-| keyboard steering | Adaptive Game is the browser default and is checked at 50/100/140 km/h for monotonic half/full response and less than 15 degrees peak front slip; explicit settled Digital Raw/Test reaches full rack after one physics step, and mode/device changes are bumpless |
-| gamepad and wheel | pure-function tests cover inner/outer deadzones, expo, symmetric endpoints, pedal direction, device-activity latching and device-id-scoped rest calibration; wheel policy remains calibrated linear 1:1 |
+| keyboard steering | Sport Adaptive is the browser default and is checked at 50/100/140 km/h for monotonic half/full response and less than 15 degrees peak front slip; explicit settled Simulation Digital Raw/Test reaches full rack, and mode/device changes are bumpless |
+| gamepad and wheel | Accessible (7.5 m/s²) and Sport (10.0 m/s²) gamepad targets are sampled at 50/100/140 km/h for quarter/half monotonic response; Simulation is normalized raw. Pure-function tests cover deadzones/expo/calibration and the wheel remains calibrated linear 1:1 in every profile. Both keyboard and gamepad policy produce identical state under 30/60/120/144 Hz render grouping. |
 | high-speed steering and ESC | raw plant input remains effective and left/right symmetric; oversteer and opposite-yaw fixtures select physically corrective brake corners; the browser race preset starts with ESC off and exposes an E-key toggle |
 | longitudinal plausibility | full throttle accelerates the RWD reference car in local forward (-Z) |
 | automatic shift acceleration | a 20-second full-throttle run shifts sequentially, remains below the limiter, avoids over-rev failure and continues accelerating |

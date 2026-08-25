@@ -1,6 +1,7 @@
 export const INPUT_CONFIG_STORAGE_KEY = 'my-physics.input-config.v1';
 
 export const DEFAULT_INPUT_CONFIG = Object.freeze({
+  driveProfile: 'sport',
   keyboardAdaptive: true,
   response: 'balanced',
   gamepadDeadzone: 0.08,
@@ -30,8 +31,12 @@ export function sanitizeInputConfig(candidate = {}) {
   const maximum = finite(candidate.steeringMax, defaults.steeringMax);
   const center = finite(candidate.steeringCenter, defaults.steeringCenter);
   const validSteeringRange = minimum < center && center < maximum;
+  const driveProfile = ['accessible', 'sport', 'simulation'].includes(candidate.driveProfile)
+    ? candidate.driveProfile
+    : candidate.keyboardAdaptive === false ? 'simulation' : 'sport';
   return {
-    keyboardAdaptive: candidate.keyboardAdaptive !== false,
+    driveProfile,
+    keyboardAdaptive: driveProfile !== 'simulation',
     response: candidate.response === 'direct' ? 'direct' : 'balanced',
     gamepadDeadzone: Math.min(0.35, Math.max(0, finite(candidate.gamepadDeadzone, defaults.gamepadDeadzone))),
     gamepadOuterDeadzone: Math.min(0.2, Math.max(0, finite(candidate.gamepadOuterDeadzone, defaults.gamepadOuterDeadzone))),
@@ -59,6 +64,7 @@ export function inputConfigFromSources(search = '', storedJson = '') {
   }
   const parameters = search instanceof URLSearchParams ? search : new URLSearchParams(search);
   const combined = { ...DEFAULT_INPUT_CONFIG, ...stored };
+  if (!Object.hasOwn(stored, 'driveProfile') && stored.keyboardAdaptive === false) combined.driveProfile = 'simulation';
   const numericParameters = {
     inputDeadzone: 'gamepadDeadzone',
     inputOuterDeadzone: 'gamepadOuterDeadzone',
@@ -83,8 +89,11 @@ export function inputConfigFromSources(search = '', storedJson = '') {
     }
   }
   if (parameters.has('inputResponse')) combined.response = parameters.get('inputResponse');
-  if (parameters.has('keyboardAssist')) combined.keyboardAdaptive = parameters.get('keyboardAssist') !== '0';
-  if (parameters.has('inputMode')) combined.keyboardAdaptive = parameters.get('inputMode') !== 'raw';
+  if (parameters.has('driveProfile')) combined.driveProfile = parameters.get('driveProfile');
+  if (parameters.has('keyboardAssist')) {
+    combined.driveProfile = parameters.get('keyboardAssist') === '0' ? 'simulation' : 'sport';
+  }
+  if (parameters.has('inputMode')) combined.driveProfile = parameters.get('inputMode') === 'raw' ? 'simulation' : 'sport';
   return sanitizeInputConfig(combined);
 }
 

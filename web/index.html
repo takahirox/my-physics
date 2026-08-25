@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>My Physics — Vehicle Dynamics Lab</title>
   <link rel="stylesheet" href="./style.css">
 </head>
@@ -13,7 +14,7 @@
       <div id="status" class="status">Loading physics.wasm…</div>
     </header>
     <section class="layout">
-      <div class="viewport"><canvas id="track"></canvas><div class="legend">3D · WASD / arrows · C: camera · I: Adaptive / Digital Raw · P: AI driver · E: ESC · Shift: clutch · Space: handbrake · T: auto · 1–6: gear · K/L: save/restore</div></div>
+      <div class="viewport"><canvas id="track"></canvas><div class="legend">3D · WASD / arrows · C: camera · I: Sport / Simulation · P: AI driver · E: ESC override · Shift: clutch · Space: handbrake · T: auto · 1–6: gear · K/L: save/restore</div></div>
       <aside>
         <div class="metric hero"><label>SPEED</label><strong id="speed">0.0</strong><span>km/h</span></div>
         <div class="grid">
@@ -26,7 +27,8 @@
           <div class="metric"><label>FFB TORQUE</label><strong id="ffb">0.0 Nm</strong></div>
         </div>
         <div class="device"><label>INPUT</label><span id="inputDevice">KEYBOARD</span></div>
-        <div class="device"><label>KEYBOARD</label><select id="keyboardPolicy"><option value="adaptive">ADAPTIVE (GAME)</option><option value="raw">DIGITAL RAW / TEST</option></select></div>
+        <div class="device"><label>DRIVE PROFILE</label><select id="driveProfile"><option value="accessible">ACCESSIBLE · 0.76G + ESC</option><option value="sport" selected>SPORT · 1.02G</option><option value="simulation">SIMULATION · RAW</option></select></div>
+        <div class="device"><label>KEYBOARD POLICY</label><select id="keyboardPolicy"><option value="adaptive">PROFILE ADAPTIVE</option><option value="raw">SIMULATION DIGITAL RAW / TEST</option></select></div>
         <div class="device"><label>PAD CURVE</label><select id="inputResponse"><option value="balanced">BALANCED EXPO</option><option value="direct">DIRECT LINEAR</option></select></div>
         <div class="device setup"><label>DEVICE SETUP</label><span><button id="calibrateRest">REST / CENTER</button><button id="resetCalibration">RESET</button></span></div>
         <div class="device"><label>CALIBRATION</label><span id="calibrationStatus">DEFAULT RANGE</span></div>

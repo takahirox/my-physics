@@ -38,6 +38,8 @@ wind ─► aero ─────────────► 6-DoF chassis
 
 The browser exposes the raw, normalized, policy, plant-input and post-aid stages with sample and physics-step numbers. Input-policy state is stepped on the physics clock and saved with the browser controller snapshot. Calibration and active-device selection remain platform-adapter concerns; they do not modify tire, rack or chassis parameters.
 
+Game-facing profiles are controller configuration, not vehicle definitions. Accessible and Sport apply different lateral-acceleration targets to keyboard/gamepad gain and slew; Accessible also selects ESC on. Simulation sends normalized raw commands and leaves vehicle aids explicit. A calibrated wheel always bypasses speed gain and remains linear 1:1. Profile/controller/ESC state is included in browser snapshot restore.
+
 The compact WASM diagnostic getters identify stages as `0=raw`, `1=normalized`, `2=policy`, `3=plant input`, `4=post-aid`, and devices as `1=keyboard`, `2=gamepad`, `3=wheel`. Post-aid diagnostics additionally expose per-wheel braking and ABS plus TC/ESC activity. These are observability contracts; the existing `physics_set_input` raw application API remains available.
 
 The native and WASM paths call this same flow. Non-player LOD caches expensive force evaluation for 4 or 10 base ticks while continuing rigid-body integration every 1 ms. A first-order fidelity transition plus 50 ms cached-force blending avoids abrupt LOD changes. Device benchmarks set an automatic fidelity ceiling and applications can override it.

@@ -23,5 +23,6 @@
 - Advanced snapshots to archive version 2 while retaining version-1 decoding with documented defaults for the new controller and wheel-fit state.
 - Reworked WebGL speed perception without changing physics scale: curbs, fence posts, barrier joints, asphalt patches and rubber detail now follow cumulative circuit distance, while closer chase and hood camera presets are switchable with C or the UI.
 - Made Adaptive Game the normal keyboard experience while retaining explicit Digital Raw/Test, added bumpless device/mode transfer, calibrated gamepad/wheel normalization and step-numbered raw-to-aid input telemetry without changing the physical plant.
+- Added Accessible, Sport and Simulation drive profiles: gamepad and keyboard speed policy now runs at the 1 ms physics tick, high-speed pad input is bounded by a declared lateral-acceleration target, and calibrated wheels remain linear 1:1. Profile, controller and aid state round-trip through browser snapshots.
 
 The source implementation is complete for the documented v0.1 acceptance matrix. A public release tag and open-source license grant remain pending the owner’s explicitly deferred license decision.

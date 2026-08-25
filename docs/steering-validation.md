@@ -24,7 +24,7 @@ The permanent `steering_validation` probe settles a neutral-driveline vehicle, a
 | 100 km/h | 9.77° | 19.11° | 8.77° | 0.0671 |
 | 140 km/h | 6.64° | 13.02° | 6.90° | 0.0337 |
 
-The physical maximum remains 0.54 rad (30.9°). Simulator-strict raw keyboard steering is the browser default and reaches normalized full rack input on the next physics step. The optional I-key keyboard adapter is speed-limited and slew-controlled at the configured 1 ms physics timestep, so render frame cadence cannot alter its response. Gamepad and wheel axes continue to call the raw input API.
+The physical maximum remains 0.54 rad (30.9°). Sport Adaptive is the normal browser profile. Accessible targets 7.5 m/s² and enables ESC; Sport targets 10.0 m/s²; Simulation exposes Digital Raw/Test keyboard and normalized raw gamepad input. Keyboard/gamepad gain and slew execute at the configured 1 ms physics timestep, so render cadence cannot alter response. Wheel input remains calibrated linear 1:1 with no speed assistance. None of these profiles changes the physical plant.
 
 Run the evidence with:
 

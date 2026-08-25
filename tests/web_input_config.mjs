@@ -22,9 +22,23 @@ test('URL values override persisted calibration and remain bounded', () => {
   assert.equal(config.gamepadDeadzone, 0.06);
   assert.equal(config.gamepadExponent, 1.8);
   assert.equal(config.keyboardAdaptive, true);
+  assert.equal(config.driveProfile, 'sport');
   assert.equal(config.steeringCenter, 0.02);
   assert.equal(config.calibratedDevice, '', 'explicit URL calibration is portable rather than tied to stored device id');
   assert.equal(inputConfigFromSources('?inputDeadzone=99').gamepadDeadzone, 0.35);
+});
+
+test('drive profile persists, accepts URL override, and migrates legacy raw mode', () => {
+  assert.equal(inputConfigFromSources('').driveProfile, 'sport');
+  assert.equal(inputConfigFromSources('', JSON.stringify({ driveProfile: 'accessible' })).driveProfile, 'accessible');
+  assert.equal(
+    inputConfigFromSources('?driveProfile=simulation', JSON.stringify({ driveProfile: 'accessible' })).driveProfile,
+    'simulation',
+  );
+  const migrated = inputConfigFromSources('', JSON.stringify({ keyboardAdaptive: false }));
+  assert.equal(migrated.driveProfile, 'simulation');
+  assert.equal(migrated.keyboardAdaptive, false);
+  assert.equal(inputConfigFromSources('?driveProfile=invalid').driveProfile, 'sport');
 });
 
 test('gamepad steering has symmetric deadzones/expo while wheel stays calibrated linear', () => {
