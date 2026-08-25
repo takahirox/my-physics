@@ -1,4 +1,9 @@
-//! Collision primitives and deterministic planar narrow-phase helpers.
+//! Collision primitives and deterministic narrow-phase helpers.
+//!
+//! Box/box contacts use a full 15-axis 3D OBB SAT. The v0.1 capsule/box and
+//! convex/box paths still use a planar contact construction with a bounded
+//! vertical overlap; full 3D capsule and arbitrary-convex manifolds remain a
+//! documented approximation rather than being implied by the box solver.
 
 use crate::math::{Quat, Vec3};
 

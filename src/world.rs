@@ -460,7 +460,8 @@ impl PhysicsWorld {
                         if tangent_velocity.length_squared() > 1.0e-12 {
                             let tangent = tangent_velocity.normalized();
                             let tangent_angular =
-                                inverse_inertia_world(v.state.orientation, inertia, r.cross(tangent)).cross(r);
+                                inverse_inertia_world(v.state.orientation, corrected_inertia, r.cross(tangent))
+                                    .cross(r);
                             let unconstrained =
                                 -tangent_velocity.length() / (inverse_mass + tangent.dot(tangent_angular)).max(1.0e-12);
                             let friction_limit = c.friction.clamp(0.0, 1.5) * normal_impulse_magnitude;
@@ -520,7 +521,19 @@ struct IntegrationContext {
 fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: IntegrationContext) {
     let IntegrationContext { tire_model, wind, gravity, dt, recompute, lod_stride } = context;
     v.update_controls(dt);
+    let inertia_before_powertrain = v.inertia_kg_m2();
+    let angular_momentum_before_powertrain =
+        inertia_world(v.state.orientation, inertia_before_powertrain, v.state.angular_velocity_rad_s);
     let drive_torque = v.update_powertrain(dt);
+    let inertia_after_powertrain = v.inertia_kg_m2();
+    if inertia_after_powertrain != inertia_before_powertrain {
+        // Fuel burn changes the inertia tensor before force integration. Carry
+        // forward the chassis angular momentum rather than reinterpreting the
+        // previous angular velocity through the new tensor and introducing an
+        // artificial torque.
+        v.state.angular_velocity_rad_s =
+            inverse_inertia_world(v.state.orientation, inertia_after_powertrain, angular_momentum_before_powertrain);
+    }
     let mass = v.mass_kg();
     let old_velocity = v.state.linear_velocity_mps;
     if recompute {

@@ -247,6 +247,7 @@ fn torque_free_asymmetric_rigid_body_conserves_world_angular_momentum() {
     let vehicle = &mut world.vehicles[0];
     vehicle.definition.chassis.drag_coefficient = 0.0;
     vehicle.definition.chassis.lift_coefficient = 0.0;
+    vehicle.state.powertrain.fuel_kg = 0.0;
     vehicle.state.position_m = Vec3::new(0.0, 100.0, 0.0);
     vehicle.state.linear_velocity_mps = Vec3::ZERO;
     vehicle.state.orientation = Quat::from_axis_angle(Vec3::new(0.3, 0.8, -0.2), 0.7);
@@ -272,6 +273,7 @@ fn principal_axis_free_rotation_has_no_artificial_decay() {
     let vehicle = &mut world.vehicles[0];
     vehicle.definition.chassis.drag_coefficient = 0.0;
     vehicle.definition.chassis.lift_coefficient = 0.0;
+    vehicle.state.powertrain.fuel_kg = 0.0;
     vehicle.state.position_m = Vec3::new(0.0, 100.0, 0.0);
     vehicle.state.orientation = Quat::from_axis_angle(Vec3::new(-0.4, 0.2, 0.7), 1.1);
     let initial_axis_world = vehicle.state.orientation.rotate(Vec3::Y);
@@ -297,6 +299,7 @@ fn torque_free_rotation_is_covariant_under_world_frame_rotation() {
     first.config.gravity_mps2 = 0.0;
     first.vehicles[0].definition.chassis.drag_coefficient = 0.0;
     first.vehicles[0].definition.chassis.lift_coefficient = 0.0;
+    first.vehicles[0].state.powertrain.fuel_kg = 0.0;
     first.vehicles[0].state.position_m = Vec3::new(0.0, 100.0, 0.0);
     first.vehicles[0].state.orientation = Quat::from_axis_angle(Vec3::new(0.2, 0.9, -0.3), 0.8);
     first.vehicles[0].state.angular_velocity_rad_s = Vec3::new(1.1, -0.7, 2.0);
@@ -328,6 +331,7 @@ fn offset_vehicle_impact_generates_yaw_and_conserves_planar_angular_momentum() {
     for vehicle in &mut world.vehicles {
         vehicle.definition.chassis.drag_coefficient = 0.0;
         vehicle.definition.chassis.lift_coefficient = 0.0;
+        vehicle.state.powertrain.fuel_kg = 0.0;
         vehicle.state.position_m.y = 100.0;
         vehicle.state.orientation = Quat::IDENTITY;
         vehicle.state.angular_velocity_rad_s = Vec3::ZERO;
@@ -371,6 +375,7 @@ fn offset_static_wall_impact_applies_angular_impulse() {
     let vehicle = &mut world.vehicles[0];
     vehicle.definition.chassis.drag_coefficient = 0.0;
     vehicle.definition.chassis.lift_coefficient = 0.0;
+    vehicle.state.powertrain.fuel_kg = 0.0;
     vehicle.state.position_m = Vec3::new(2.4, 100.0, 0.0);
     vehicle.state.linear_velocity_mps = Vec3::new(0.0, 0.0, -10.0);
     vehicle.state.angular_velocity_rad_s = Vec3::ZERO;
@@ -386,6 +391,38 @@ fn offset_static_wall_impact_applies_angular_impulse() {
     let normal_speed_after = contact_velocity(&world.vehicles[0], impact_point).dot(normal);
     let restitution = normal_speed_after / -normal_speed_before;
     assert!((restitution - 0.1).abs() < 1.0e-10, "restitution={restitution}");
+}
+
+#[test]
+fn static_collision_friction_obeys_coulomb_limit_and_does_not_add_energy() {
+    let mut world = collision_world(
+        CollisionShape::Box { half_extents_m: Vec3::new(4.0, 1.0, 0.4) },
+        Vec3::new(0.0, 100.0, -2.3),
+        Quat::IDENTITY,
+    );
+    world.config.gravity_mps2 = 0.0;
+    world.static_colliders[0].restitution = 0.1;
+    world.static_colliders[0].friction = 0.3;
+    let vehicle = &mut world.vehicles[0];
+    vehicle.definition.chassis.drag_coefficient = 0.0;
+    vehicle.definition.chassis.lift_coefficient = 0.0;
+    vehicle.state.powertrain.fuel_kg = 0.0;
+    vehicle.state.position_m = Vec3::new(0.0, 100.0, 0.0);
+    vehicle.state.linear_velocity_mps = Vec3::new(5.0, 0.0, -10.0);
+    vehicle.state.angular_velocity_rad_s = Vec3::ZERO;
+    let mass = vehicle.mass_kg();
+    let energy_before = 0.5 * mass * vehicle.state.linear_velocity_mps.length_squared();
+    let velocity_before = vehicle.state.linear_velocity_mps;
+
+    world.step_fixed(1).unwrap();
+
+    let vehicle = &world.vehicles[0];
+    let impulse = (vehicle.state.linear_velocity_mps - velocity_before) * mass;
+    let normal_impulse = impulse.z.abs();
+    let tangent_impulse = impulse.x.abs();
+    let energy_after = 0.5 * mass * vehicle.state.linear_velocity_mps.length_squared() + rotational_energy(vehicle);
+    assert!(tangent_impulse <= 0.3 * normal_impulse + 1.0e-9);
+    assert!(energy_after <= energy_before + 1.0e-8, "before={energy_before}, after={energy_after}");
 }
 
 #[test]
