@@ -5,11 +5,22 @@ import {
   metricIntervals,
   metricSamples,
 } from './visual-config.mjs';
+import {
+  DEFAULT_INPUT_CONFIG,
+  INPUT_CONFIG_STORAGE_KEY,
+  DeviceActivityLatch,
+  captureRestCalibration,
+  inputActivityMagnitude,
+  inputConfigFromSources,
+  inputConfigForDevice,
+  normalizeCenteredAxis,
+  normalizePedalAxis,
+} from './input-config.mjs';
 
 const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
 const ui = Object.fromEntries(
-  ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality', 'cameraPreset'].map(
+  ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality', 'cameraPreset', 'keyboardPolicy', 'inputResponse', 'calibrationStatus'].map(
     (id) => [id, document.querySelector(`#${id}`)],
   ),
 );
@@ -21,6 +32,30 @@ let gear = 0;
 let completedLaps = 0;
 let previousProgress;
 let cameraPreset = 'chase';
+const inputParameters = new URLSearchParams(location.search);
+let inputConfig = inputConfigFromSources(inputParameters, (() => {
+  try {
+    return localStorage.getItem(INPUT_CONFIG_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+})());
+
+function persistInputConfig() {
+  try {
+    localStorage.setItem(INPUT_CONFIG_STORAGE_KEY, JSON.stringify(inputConfig));
+  } catch {
+    // Sandboxed/private browsers may deny persistence; the active config
+    // remains valid for this session and URL parameters still work.
+  }
+}
+
+function setKeyboardAdaptive(enabled, persist = true) {
+  inputConfig = { ...inputConfig, keyboardAdaptive: enabled };
+  if (ui.keyboardPolicy) ui.keyboardPolicy.value = enabled ? 'adaptive' : 'raw';
+  if (api) api.physics_set_keyboard_assist(enabled ? 1 : 0);
+  if (persist) persistInputConfig();
+}
 
 function selectCameraPreset(name) {
   cameraPreset = CAMERA_PRESET_ORDER.includes(name) ? name : 'chase';
@@ -34,6 +69,7 @@ addEventListener('keydown', (event) => {
   if (event.code === 'KeyT') gear = 0;
   if (event.code === 'KeyR') {
     api?.physics_reset();
+    if (api) api.physics_set_keyboard_assist(inputConfig.keyboardAdaptive ? 1 : 0);
     completedLaps = 0;
     previousProgress = undefined;
   }
@@ -44,7 +80,7 @@ addEventListener('keydown', (event) => {
     api.physics_set_player_esc(api.physics_player_esc() ? 0 : 1);
   }
   if (event.code === 'KeyI' && api && !event.repeat) {
-    api.physics_set_keyboard_assist(api.physics_keyboard_assist() ? 0 : 1);
+    setKeyboardAdaptive(!api.physics_keyboard_assist());
   }
   if (event.code === 'KeyC' && !event.repeat) {
     const current = CAMERA_PRESET_ORDER.indexOf(cameraPreset);
@@ -62,54 +98,98 @@ addEventListener('keyup', (event) => keys.delete(event.code));
 
 class InputAdapter {
   constructor() {
-    this.parameters = new URLSearchParams(location.search);
+    this.parameters = inputParameters;
+    this.activity = new DeviceActivityLatch();
     this.lastRumble = 0;
+    this.activePad = null;
   }
 
-  pedal(axis) {
-    return Math.max(0, Math.min(1, (1 - axis) * 0.5));
-  }
-
-  axis(pad, name, fallback) {
+  axis(pad, name, fallback, missing) {
     const index = Number(this.parameters.get(`${name}Axis`) ?? fallback);
-    return pad.axes[index] ?? 1;
+    return pad.axes[index] ?? missing;
   }
 
-  read() {
+  padSample(pad) {
+    const isWheel = /wheel|g29|g920|g923|t150|t248|t300|t500|fanatec|moza|simagic/i.test(pad.id);
+    const deviceConfig = inputConfigForDevice(inputConfig, pad.id);
+    const raw = {
+      steer: this.axis(pad, 'steer', 0, deviceConfig.steeringCenter),
+      throttle: isWheel ? this.axis(pad, 'throttle', 1, deviceConfig.throttleReleased) : pad.buttons[7]?.value || 0,
+      brake: isWheel ? this.axis(pad, 'brake', 2, deviceConfig.brakeReleased) : pad.buttons[6]?.value || 0,
+      clutch: isWheel ? this.axis(pad, 'clutch', 3, deviceConfig.clutchReleased) : pad.buttons[4]?.value || 0,
+      handbrake: pad.buttons[0]?.value || 0,
+    };
+    const normalized = {
+      steer: normalizeCenteredAxis(raw.steer, deviceConfig, isWheel),
+      throttle: isWheel ? normalizePedalAxis(raw.throttle, deviceConfig.throttleReleased, deviceConfig.throttlePressed) : raw.throttle,
+      brake: isWheel ? normalizePedalAxis(raw.brake, deviceConfig.brakeReleased, deviceConfig.brakePressed) : raw.brake,
+      clutch: isWheel ? normalizePedalAxis(raw.clutch, deviceConfig.clutchReleased, deviceConfig.clutchPressed) : raw.clutch,
+      handbrake: raw.handbrake,
+    };
+    return {
+      key: `pad:${pad.index}`,
+      raw,
+      normalized,
+      magnitude: inputActivityMagnitude(normalized),
+      device: `${isWheel ? 'WHEEL' : 'GAMEPAD'} · ${pad.id}`,
+      deviceKind: isWheel ? 3 : 2,
+      pad,
+      isWheel,
+    };
+  }
+
+  read(nowMs = performance.now()) {
     const keyboardSteer =
       (keys.has('ArrowLeft') || keys.has('KeyA') ? -1 : 0) + (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0);
-    let steer = keyboardSteer;
-    let keyboardSteering = true;
-    let throttle = keys.has('ArrowUp') || keys.has('KeyW') ? 1 : 0;
-    let brake = keys.has('ArrowDown') || keys.has('KeyS') ? 1 : 0;
-    let clutch = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0;
-    let handbrake = keys.has('Space') ? 1 : 0;
-    let device = 'KEYBOARD';
-    const pad = [...(navigator.getGamepads?.() || [])].find(Boolean);
-    if (pad) {
-      const isWheel = /wheel|g29|g920|g923|t150|t248|t300|t500|fanatec|moza|simagic/i.test(pad.id);
-      device = isWheel ? `WHEEL · ${pad.id}` : `GAMEPAD · ${pad.id}`;
-      if (isWheel) {
-        if (keyboardSteer === 0) {
-          steer = this.axis(pad, 'steer', 0);
-          keyboardSteering = false;
-        }
-        throttle = Math.max(throttle, this.pedal(this.axis(pad, 'throttle', 1)));
-        brake = Math.max(brake, this.pedal(this.axis(pad, 'brake', 2)));
-        clutch = Math.max(clutch, this.pedal(this.axis(pad, 'clutch', 3)));
-        handbrake = Math.max(handbrake, pad.buttons[0]?.value || 0);
-      } else {
-        if (keyboardSteer === 0) {
-          steer = Math.abs(pad.axes[0]) > 0.08 ? pad.axes[0] : 0;
-          keyboardSteering = false;
-        }
-        throttle = Math.max(throttle, pad.buttons[7]?.value || 0);
-        brake = Math.max(brake, pad.buttons[6]?.value || 0);
-        clutch = Math.max(clutch, pad.buttons[4]?.value || 0);
-        handbrake = Math.max(handbrake, pad.buttons[0]?.value || 0);
-      }
+    const keyboard = {
+      key: 'keyboard',
+      raw: {
+        steer: keyboardSteer,
+        throttle: keys.has('ArrowUp') || keys.has('KeyW') ? 1 : 0,
+        brake: keys.has('ArrowDown') || keys.has('KeyS') ? 1 : 0,
+        clutch: keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0,
+        handbrake: keys.has('Space') ? 1 : 0,
+      },
+      device: 'KEYBOARD',
+      deviceKind: 1,
+      pad: null,
+      priority: true,
+    };
+    keyboard.normalized = { ...keyboard.raw };
+    keyboard.magnitude = inputActivityMagnitude(keyboard.normalized);
+    const pads = [...(navigator.getGamepads?.() || [])].filter(Boolean).map((pad) => this.padSample(pad));
+    const candidates = [keyboard, ...pads];
+    if (!candidates.some(({ key }) => key === this.activity.active)) {
+      this.activity.active = 'keyboard';
     }
-    return { steer, keyboardSteer, keyboardSteering, throttle, brake, clutch, handbrake, device, pad };
+    const activeKey = this.activity.select(candidates, nowMs);
+    const active = candidates.find(({ key }) => key === activeKey) || keyboard;
+    this.activePad = active.pad;
+    return {
+      steer: active.normalized.steer,
+      keyboardSteer: keyboard.normalized.steer,
+      keyboardSteering: active.deviceKind === 1,
+      throttle: active.normalized.throttle,
+      brake: active.normalized.brake,
+      clutch: active.normalized.clutch,
+      handbrake: active.normalized.handbrake,
+      raw: active.raw,
+      normalized: active.normalized,
+      device: active.device,
+      deviceKind: active.deviceKind,
+      pad: active.pad,
+    };
+  }
+
+  captureRest() {
+    const pad = this.activePad || [...(navigator.getGamepads?.() || [])].find(Boolean);
+    if (!pad) return null;
+    return captureRestCalibration(inputConfig, pad, {
+      steering: this.axis(pad, 'steer', 0, 0),
+      throttle: this.axis(pad, 'throttle', 1, 1),
+      brake: this.axis(pad, 'brake', 2, 1),
+      clutch: this.axis(pad, 'clutch', 3, 1),
+    });
   }
 
   rumble(pad, magnitude, now) {
@@ -553,6 +633,7 @@ class Renderer3D {
 
     window.__MY_PHYSICS_FRAME__ = {
       simulationTime: physics.physics_time(),
+      physicsStep: physics.physics_step_index(),
       speedMps,
       yaw,
       steering: physics.physics_steering(0),
@@ -605,6 +686,9 @@ function updateUi() {
   const damage = api.physics_damage(0);
   ui.damage.style.width = `${damage * 100}%`;
   ui.damageText.textContent = `${Math.round(damage * 100)}%`;
+  const adaptive = api.physics_keyboard_assist() !== 0;
+  inputConfig = { ...inputConfig, keyboardAdaptive: adaptive };
+  ui.keyboardPolicy.value = adaptive ? 'adaptive' : 'raw';
   ui.tires.innerHTML = [0, 1, 2, 3]
     .map(
       (wheel) => `<div class="tire"><span>${['FL', 'FR', 'RL', 'RR'][wheel]}</span><b>${(
@@ -632,36 +716,82 @@ function benchmarkPhysics() {
   api.physics_reset();
 }
 
+function readInputStage(stage) {
+  const result = {
+    steering: api.physics_input_stage_steering(stage),
+    throttle: api.physics_input_stage_throttle(stage),
+    brake: api.physics_input_stage_brake(stage),
+    clutch: api.physics_input_stage_clutch(stage),
+    handbrake: api.physics_input_stage_handbrake(stage),
+    gear: api.physics_input_stage_gear(stage),
+  };
+  if (stage === 4) {
+    result.brakePerWheel = [0, 1, 2, 3].map((wheel) => api.physics_input_aid_brake(wheel));
+    result.absActive = [0, 1, 2, 3].map((wheel) => api.physics_input_abs_active(wheel) !== 0);
+    result.tcActive = api.physics_input_tc_active() !== 0;
+    result.escActive = api.physics_input_esc_active() !== 0;
+  }
+  return result;
+}
+
 function frame(now) {
   const elapsed = Math.min((now - previous) / 1000, 0.05);
   previous = now;
   accumulator += elapsed;
   const input = inputAdapter.read();
-  window.__MY_PHYSICS_INPUT__ = {
-    steer: input.steer,
-    keyboardSteering: input.keyboardSteering,
-    throttle: input.throttle,
-    brake: input.brake,
-    clutch: input.clutch,
-    handbrake: input.handbrake,
-    device: input.device,
-    keyboardAssist: api.physics_keyboard_assist() !== 0,
-  };
   const escStatus = api.physics_player_esc() ? 'ESC ON' : 'ESC OFF';
-  const steeringMode = api.physics_keyboard_assist() ? 'STEER ASSIST' : 'STEER RAW';
+  const steeringMode = input.deviceKind === 1
+    ? api.physics_keyboard_assist() ? 'ADAPTIVE KEYBOARD' : 'DIGITAL RAW/TEST'
+    : input.deviceKind === 3 ? 'CALIBRATED WHEEL · 1:1 RAW' : `${inputConfig.response.toUpperCase()} GAMEPAD`;
+  const keyboardToggleHint = input.deviceKind === 1 ? ' · I' : '';
   ui.inputDevice.textContent = api.physics_player_autopilot()
     ? `AI DRIVER · P · ${escStatus}`
-    : `${input.device} · ${steeringMode} · I · ${escStatus} · E`;
+    : `${input.device} · ${steeringMode}${keyboardToggleHint} · ${escStatus} · E`;
   if (input.keyboardSteering) {
     api.physics_set_keyboard_input(input.keyboardSteer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
   } else {
-    api.physics_set_input(input.steer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
+    api.physics_set_device_input(
+      input.deviceKind,
+      input.raw.steer,
+      input.raw.throttle,
+      input.raw.brake,
+      input.raw.clutch,
+      input.raw.handbrake,
+      input.steer,
+      input.throttle,
+      input.brake,
+      input.clutch,
+      input.handbrake,
+      gear,
+    );
   }
   const steps = Math.min(Math.floor(accumulator / 0.001), 50);
   if (steps) {
     api.physics_step(steps);
     accumulator -= steps * 0.001;
   }
+  window.__MY_PHYSICS_INPUT__ = {
+    worldStep: api.physics_step_index(),
+    appliedStep: api.physics_input_applied_step(),
+    sampleSequence: api.physics_input_sample_sequence(),
+    deviceKind: api.physics_input_device(),
+    transitioning: api.physics_input_transitioning() !== 0,
+    device: input.device,
+    keyboardSteering: input.keyboardSteering,
+    keyboardAssist: api.physics_keyboard_assist() !== 0,
+    steer: input.steer,
+    throttle: input.throttle,
+    brake: input.brake,
+    clutch: input.clutch,
+    handbrake: input.handbrake,
+    stages: {
+      raw: readInputStage(0),
+      normalized: readInputStage(1),
+      policy: readInputStage(2),
+      plant: readInputStage(3),
+      aid: readInputStage(4),
+    },
+  };
   renderer.scene(api, elapsed, Math.min(1, accumulator / 0.001));
   inputAdapter.rumble(input.pad, api.physics_ffb_vibration(0), now);
   updateUi();
@@ -686,9 +816,35 @@ try {
     api.physics_set_quality(level);
   });
   ui.cameraPreset.addEventListener('change', () => selectCameraPreset(ui.cameraPreset.value));
+  ui.keyboardPolicy.addEventListener('change', () => setKeyboardAdaptive(ui.keyboardPolicy.value === 'adaptive'));
+  ui.inputResponse.addEventListener('change', () => {
+    inputConfig = { ...inputConfig, response: ui.inputResponse.value === 'direct' ? 'direct' : 'balanced' };
+    persistInputConfig();
+  });
+  document.querySelector('#calibrateRest').addEventListener('click', () => {
+    const captured = inputAdapter.captureRest();
+    if (!captured) {
+      ui.calibrationStatus.textContent = 'NO ACTIVE PAD/WHEEL';
+      return;
+    }
+    inputConfig = captured;
+    persistInputConfig();
+    ui.calibrationStatus.textContent = `SAVED · ${captured.calibratedDevice}`;
+  });
+  document.querySelector('#resetCalibration').addEventListener('click', () => {
+    inputConfig = {
+      ...DEFAULT_INPUT_CONFIG,
+      keyboardAdaptive: inputConfig.keyboardAdaptive,
+      response: inputConfig.response,
+    };
+    persistInputConfig();
+    ui.calibrationStatus.textContent = 'DEFAULT RANGE';
+  });
   selectCameraPreset(new URLSearchParams(location.search).get('camera') || 'chase');
+  ui.inputResponse.value = inputConfig.response;
+  ui.calibrationStatus.textContent = inputConfig.calibratedDevice ? `SAVED · ${inputConfig.calibratedDevice}` : 'DEFAULT RANGE';
   benchmarkPhysics();
-  if (new URLSearchParams(location.search).get('keyboardAssist') === '1') api.physics_set_keyboard_assist(1);
+  setKeyboardAdaptive(inputConfig.keyboardAdaptive, false);
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
   status.textContent = '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
   status.classList.add('ready');

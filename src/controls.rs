@@ -32,6 +32,12 @@ impl KeyboardSteeringAssist {
         self.output = 0.0;
     }
 
+    /// Seeds the adapter from the currently applied rack request. Input-mode
+    /// changes use this for a bumpless transfer without changing rack travel.
+    pub fn set_output(&mut self, output: f64) {
+        self.output = output.clamp(-1.0, 1.0);
+    }
+
     pub fn update(&mut self, direction: f64, speed_mps: f64, dt_s: f64) -> f64 {
         let target = direction.clamp(-1.0, 1.0) * speed_sensitive_steering_limit(speed_mps);
         let rate_per_s = if target == 0.0 {

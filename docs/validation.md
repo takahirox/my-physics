@@ -66,7 +66,9 @@ The integration suite currently covers:
 | circuit collision correspondence | WebGL road segments and barriers are generated from the same 240-segment, 2.06 km closed spline as the Rust collision core; a remote curved barrier has a regression test |
 | circuit scale envelope | sampled centerline radius is required to remain at least 25 m; the current minimum is 26.41 m, corresponding to about 62 km/h at 1.15 g |
 | complete-lap behavior | `cargo run --release --example circuit_lap` requires a damage-free lap inside the safe lateral envelope and reports lap time, speed and line error |
-| keyboard steering | the WASM fixture requires raw A/D to reach normalized full rack input after one physics step; the optional adapter is checked at 50/100/140 km/h for monotonic half/full response and less than 15 degrees peak front slip, and its digital-controller lap must finish without damage |
+| input pipeline | raw, normalized, policy, plant and aid stages carry sample/physics-step numbers; snapshots restore all controller stages, while 30/60/120/144 Hz application grouping reaches identical public state |
+| keyboard steering | Adaptive Game is the browser default and is checked at 50/100/140 km/h for monotonic half/full response and less than 15 degrees peak front slip; explicit settled Digital Raw/Test reaches full rack after one physics step, and mode/device changes are bumpless |
+| gamepad and wheel | pure-function tests cover inner/outer deadzones, expo, symmetric endpoints, pedal direction, device-activity latching and device-id-scoped rest calibration; wheel policy remains calibrated linear 1:1 |
 | high-speed steering and ESC | raw plant input remains effective and left/right symmetric; oversteer and opposite-yaw fixtures select physically corrective brake corners; the browser race preset starts with ESC off and exposes an E-key toggle |
 | longitudinal plausibility | full throttle accelerates the RWD reference car in local forward (-Z) |
 | automatic shift acceleration | a 20-second full-throttle run shifts sequentially, remains below the limiter, avoids over-rev failure and continues accelerating |

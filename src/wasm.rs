@@ -11,13 +11,25 @@ static DEMO: OnceLock<Mutex<PhysicsWorld>> = OnceLock::new();
 static SAVED_SNAPSHOT: OnceLock<Mutex<Option<SavedBrowserState>>> = OnceLock::new();
 static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
 static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
-static KEYBOARD_ASSIST_ENABLED: AtomicBool = AtomicBool::new(false);
+static KEYBOARD_ASSIST_ENABLED: AtomicBool = AtomicBool::new(true);
 static KEYBOARD: OnceLock<Mutex<KeyboardInputState>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Default)]
+struct InputPipelineState {
+    raw: DriverInput,
+    normalized: DriverInput,
+    policy: DriverInput,
+    device_kind: u8,
+    sample_sequence: u64,
+    applied_step: u64,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct KeyboardInputState {
     assist: KeyboardSteeringAssist,
     command: DriverInput,
+    transitioning: bool,
+    pipeline: InputPipelineState,
 }
 
 #[derive(Clone, Debug)]
@@ -54,15 +66,78 @@ pub extern "C" fn physics_reset() {
     with_world(|w| *w = PhysicsWorld::demo(10));
     PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
     PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
-    KEYBOARD_ASSIST_ENABLED.store(false, Ordering::Relaxed);
-    *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = KeyboardInputState::default();
+    KEYBOARD_ASSIST_ENABLED.store(true, Ordering::Relaxed);
+    let mut state = KeyboardInputState::default();
+    state.pipeline.device_kind = 1;
+    *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = state;
 }
+
+fn set_analog_input(device_kind: u8, raw: DriverInput, normalized: DriverInput) {
+    PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
+    let normalized = normalized.sanitized();
+    let applied_step = with_world(|world| {
+        let step = world.step_index;
+        let _ = world.set_input(0, normalized);
+        step
+    });
+    let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+    state.assist.reset();
+    state.command = normalized;
+    state.transitioning = false;
+    state.pipeline.raw = raw;
+    state.pipeline.normalized = normalized;
+    state.pipeline.policy = normalized;
+    state.pipeline.device_kind = device_kind;
+    state.pipeline.sample_sequence = state.pipeline.sample_sequence.wrapping_add(1);
+    state.pipeline.applied_step = applied_step;
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_set_input(steering: f64, throttle: f64, brake: f64, clutch: f64, handbrake: f64, gear: i32) {
-    PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
-    keyboard().lock().unwrap_or_else(|error| error.into_inner()).assist.reset();
-    with_world(|w| {
-        let _ = w.set_input(0, DriverInput { steering, throttle, brake, clutch, handbrake, gear_request: gear as i8 });
+    let input = DriverInput { steering, throttle, brake, clutch, handbrake, gear_request: gear as i8 };
+    set_analog_input(0, input, input);
+}
+
+/// Browser/device-adapter input. Raw axes are retained for diagnostics while
+/// only normalized, sanitized commands reach the controller/plant.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_set_device_input(
+    device_kind: u32,
+    raw_steering: f64,
+    raw_throttle: f64,
+    raw_brake: f64,
+    raw_clutch: f64,
+    raw_handbrake: f64,
+    steering: f64,
+    throttle: f64,
+    brake: f64,
+    clutch: f64,
+    handbrake: f64,
+    gear: i32,
+) {
+    let raw = DriverInput {
+        steering: raw_steering,
+        throttle: raw_throttle,
+        brake: raw_brake,
+        clutch: raw_clutch,
+        handbrake: raw_handbrake,
+        gear_request: gear as i8,
+    };
+    let normalized = DriverInput { steering, throttle, brake, clutch, handbrake, gear_request: gear as i8 }.sanitized();
+    let device_kind = device_kind.clamp(2, 3) as u8;
+    PLAYER_INPUT_MODE.store(2, Ordering::Relaxed);
+    with_world(|world| {
+        let current = world.vehicles.first().map_or(0.0, |vehicle| vehicle.input.steering);
+        let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+        if state.pipeline.device_kind != device_kind {
+            state.assist.set_output(current);
+            state.transitioning = true;
+        }
+        state.command = normalized;
+        state.pipeline.raw = raw;
+        state.pipeline.normalized = normalized;
+        state.pipeline.device_kind = device_kind;
+        state.pipeline.sample_sequence = state.pipeline.sample_sequence.wrapping_add(1);
     });
 }
 #[unsafe(no_mangle)]
@@ -75,24 +150,47 @@ pub extern "C" fn physics_set_keyboard_input(
     gear: i32,
 ) {
     PLAYER_INPUT_MODE.store(1, Ordering::Relaxed);
-    let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
-    state.command =
-        DriverInput { steering: direction, throttle, brake, clutch, handbrake, gear_request: gear as i8 }.sanitized();
+    with_world(|world| {
+        let current = world.vehicles.first().map_or(0.0, |vehicle| vehicle.input.steering);
+        let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+        if state.pipeline.device_kind != 1 {
+            state.assist.set_output(current);
+            state.transitioning = true;
+        }
+        state.command =
+            DriverInput { steering: direction, throttle, brake, clutch, handbrake, gear_request: gear as i8 }
+                .sanitized();
+        state.pipeline.raw = state.command;
+        state.pipeline.normalized = state.command;
+        state.pipeline.device_kind = 1;
+        state.pipeline.sample_sequence = state.pipeline.sample_sequence.wrapping_add(1);
+    });
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_step(steps: u32) {
     with_world(|w| {
         for _ in 0..steps {
-            if !PLAYER_AUTOPILOT.load(Ordering::Relaxed) && PLAYER_INPUT_MODE.load(Ordering::Relaxed) == 1 {
+            let input_mode = PLAYER_INPUT_MODE.load(Ordering::Relaxed);
+            if !PLAYER_AUTOPILOT.load(Ordering::Relaxed) && matches!(input_mode, 1 | 2) {
                 let speed = w.vehicles.first().map_or(0.0, |vehicle| vehicle.telemetry.speed_mps);
                 let mut keyboard = keyboard().lock().unwrap_or_else(|error| error.into_inner());
                 let command = keyboard.command;
-                let steering = if KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed) {
-                    keyboard.assist.update(command.steering, speed, w.config.fixed_dt_s)
+                let assist_enabled = input_mode == 1 && KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed);
+                let steering = if assist_enabled || keyboard.transitioning {
+                    let policy_speed = if assist_enabled { speed } else { 0.0 };
+                    let output = keyboard.assist.update(command.steering, policy_speed, w.config.fixed_dt_s);
+                    let target = command.steering * crate::controls::speed_sensitive_steering_limit(policy_speed);
+                    if keyboard.transitioning && (output - target).abs() <= 1.0e-9 {
+                        keyboard.transitioning = false;
+                    }
+                    output
                 } else {
                     command.steering
                 };
-                let _ = w.set_input_unrecorded(0, DriverInput { steering, ..command });
+                let policy = DriverInput { steering, ..command };
+                keyboard.pipeline.policy = policy;
+                keyboard.pipeline.applied_step = w.step_index;
+                let _ = w.set_input_unrecorded(0, policy);
             }
             let ai_start = if PLAYER_AUTOPILOT.load(Ordering::Relaxed) { 0 } else { 1 };
             for n in ai_start..w.vehicles.len() {
@@ -167,8 +265,15 @@ pub extern "C" fn physics_set_player_esc(enabled: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_set_keyboard_assist(enabled: u32) {
     let enabled = enabled != 0;
-    if KEYBOARD_ASSIST_ENABLED.swap(enabled, Ordering::Relaxed) != enabled {
-        keyboard().lock().unwrap_or_else(|error| error.into_inner()).assist.reset();
+    if KEYBOARD_ASSIST_ENABLED.swap(enabled, Ordering::Relaxed) != enabled
+        && PLAYER_INPUT_MODE.load(Ordering::Relaxed) == 1
+    {
+        with_world(|world| {
+            let current = world.vehicles.first().map_or(0.0, |vehicle| vehicle.input.steering);
+            let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+            state.assist.set_output(current);
+            state.transitioning = true;
+        });
     }
 }
 #[unsafe(no_mangle)]
@@ -184,6 +289,103 @@ pub extern "C" fn physics_player_esc() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_player_autopilot() -> u32 {
     u32::from(PLAYER_AUTOPILOT.load(Ordering::Relaxed))
+}
+
+fn input_stage(stage: u32) -> DriverInput {
+    match stage {
+        0 => keyboard().lock().unwrap_or_else(|error| error.into_inner()).pipeline.raw,
+        1 => keyboard().lock().unwrap_or_else(|error| error.into_inner()).pipeline.normalized,
+        2 => keyboard().lock().unwrap_or_else(|error| error.into_inner()).pipeline.policy,
+        3 => with_world(|world| world.vehicles.first().map_or(DriverInput::default(), |vehicle| vehicle.input)),
+        4 => with_world(|world| {
+            world.vehicles.first().map_or(DriverInput::default(), |vehicle| DriverInput {
+                steering: vehicle.control.steering,
+                throttle: vehicle.control.throttle,
+                brake: vehicle.control.brake_per_wheel.into_iter().sum::<f64>() * 0.25,
+                clutch: vehicle.control.clutch,
+                handbrake: 0.0,
+                gear_request: vehicle.control.gear_request,
+            })
+        }),
+        _ => DriverInput::default(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_step_index() -> f64 {
+    with_world(|world| world.step_index as f64)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_sample_sequence() -> f64 {
+    keyboard().lock().unwrap_or_else(|error| error.into_inner()).pipeline.sample_sequence as f64
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_applied_step() -> f64 {
+    keyboard().lock().unwrap_or_else(|error| error.into_inner()).pipeline.applied_step as f64
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_device() -> u32 {
+    u32::from(keyboard().lock().unwrap_or_else(|error| error.into_inner()).pipeline.device_kind)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_transitioning() -> u32 {
+    u32::from(keyboard().lock().unwrap_or_else(|error| error.into_inner()).transitioning)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_stage_steering(stage: u32) -> f64 {
+    input_stage(stage).steering
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_stage_throttle(stage: u32) -> f64 {
+    input_stage(stage).throttle
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_stage_brake(stage: u32) -> f64 {
+    input_stage(stage).brake
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_stage_clutch(stage: u32) -> f64 {
+    input_stage(stage).clutch
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_stage_handbrake(stage: u32) -> f64 {
+    input_stage(stage).handbrake
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_stage_gear(stage: u32) -> f64 {
+    f64::from(input_stage(stage).gear_request)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_aid_brake(wheel: u32) -> f64 {
+    with_world(|world| {
+        world
+            .vehicles
+            .first()
+            .and_then(|vehicle| vehicle.control.brake_per_wheel.get(wheel as usize))
+            .copied()
+            .unwrap_or(f64::NAN)
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_abs_active(wheel: u32) -> u32 {
+    with_world(|world| {
+        u32::from(
+            world
+                .vehicles
+                .first()
+                .and_then(|vehicle| vehicle.control.abs_active.get(wheel as usize))
+                .copied()
+                .unwrap_or(false),
+        )
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_tc_active() -> u32 {
+    with_world(|world| u32::from(world.vehicles.first().is_some_and(|vehicle| vehicle.control.tc_active)))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_input_esc_active() -> u32 {
+    with_world(|world| u32::from(world.vehicles.first().is_some_and(|vehicle| vehicle.control.esc_active)))
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_time() -> f64 {
