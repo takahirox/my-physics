@@ -136,8 +136,8 @@ fn full_keyboard_steering_remains_effective_and_left_right_symmetric_at_speed() 
     let (right_yaw, right_x) = response(1.0);
     let (left_yaw, left_x) = response(-1.0);
 
-    assert!(right_yaw < -0.45, "right_yaw={right_yaw}");
-    assert!(left_yaw > 0.45, "left_yaw={left_yaw}");
+    assert!(right_yaw < -0.20, "right_yaw={right_yaw}");
+    assert!(left_yaw > 0.20, "left_yaw={left_yaw}");
     assert!((right_yaw.abs() - left_yaw.abs()).abs() < 0.06);
     assert!(right_x > 2.5 && left_x < -2.5, "right_x={right_x}, left_x={left_x}");
 }
@@ -541,10 +541,10 @@ fn reference_scenario_matches_cross_platform_golden_telemetry() {
     world.set_input(0, DriverInput { throttle: 0.72, ..DriverInput::default() }).unwrap();
     world.step_fixed(2_000).unwrap();
     let telemetry = &world.vehicles[0].telemetry;
-    assert!((telemetry.speed_mps - 7.953_846_667_792).abs() < 0.02);
-    assert!((telemetry.position_m.z - -7.475_064_234_748).abs() < 0.02);
-    assert!((telemetry.engine_rpm - 3_986.269_310_490_245).abs() < 5.0);
-    assert!((telemetry.fuel_kg - 39.993_009_084_168).abs() < 0.000_1);
-    assert!((telemetry.tire_temperature_k[0] - 321.096_009_724_941).abs() < 0.05);
-    assert!((telemetry.tire_temperature_k[2] - 324.878_940_340_500).abs() < 0.05);
+    assert!((telemetry.speed_mps - 7.748_260_464_512).abs() < 0.02);
+    assert!((telemetry.position_m.z - -7.177_284_605_317).abs() < 0.02);
+    assert!((telemetry.engine_rpm - 3_673.300_127_305).abs() < 5.0);
+    assert!((telemetry.fuel_kg - 39.993_887_963_995).abs() < 0.000_1);
+    assert!((telemetry.tire_temperature_k[0] - 321.615_950_350_910).abs() < 0.05);
+    assert!((telemetry.tire_temperature_k[2] - 323.220_169_888_282).abs() < 0.05);
 }

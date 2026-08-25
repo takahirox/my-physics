@@ -1026,28 +1026,6 @@ fn read_event(r: &mut Reader<'_>) -> Result<FeedbackEvent, ArchiveError> {
     Ok(FeedbackEvent { time_s, kind, magnitude, wheel })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{decode_snapshot, encode_snapshot_version};
-    use crate::world::PhysicsWorld;
-
-    #[test]
-    fn version_one_snapshot_defaults_new_abs_and_cornering_state() {
-        let snapshot = PhysicsWorld::demo(1).snapshot();
-        let decoded = decode_snapshot(&encode_snapshot_version(&snapshot, 1)).unwrap();
-
-        assert_eq!(decoded.step(), snapshot.step());
-        assert_eq!(decoded.vehicles[0].driver_aids.abs_pressure(), [0.0; 4]);
-        assert!(
-            decoded.vehicles[0]
-                .definition
-                .wheels
-                .iter()
-                .all(|wheel| wheel.cornering_stiffness_scale == 1.0 && wheel.tire_peak_grip_scale == 1.0)
-        );
-    }
-}
-
 fn write_tire_model(w: &mut Writer, value: MagicFormulaTire) {
     for number in [
         value.nominal_load_n,
@@ -1201,4 +1179,26 @@ fn read_bool_array<const N: usize>(r: &mut Reader<'_>) -> Result<[bool; N], Arch
         *value = r.bool()?;
     }
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_snapshot, encode_snapshot_version};
+    use crate::world::PhysicsWorld;
+
+    #[test]
+    fn version_one_snapshot_defaults_new_abs_and_cornering_state() {
+        let snapshot = PhysicsWorld::demo(1).snapshot();
+        let decoded = decode_snapshot(&encode_snapshot_version(&snapshot, 1)).unwrap();
+
+        assert_eq!(decoded.step(), snapshot.step());
+        assert_eq!(decoded.vehicles[0].driver_aids.abs_pressure(), [0.0; 4]);
+        assert!(
+            decoded.vehicles[0]
+                .definition
+                .wheels
+                .iter()
+                .all(|wheel| wheel.cornering_stiffness_scale == 1.0 && wheel.tire_peak_grip_scale == 1.0)
+        );
+    }
 }
