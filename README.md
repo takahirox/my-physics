@@ -9,7 +9,7 @@ My Physics is a deterministic, headless-first vehicle and motorsport physics eng
 - Fixed 1000 Hz reference stepping and bounded variable-timestep mode
 - 6-DoF chassis state with quaternion orientation, mutable mass, CG, inertia tensor and physical damage
 - Replaceable tire-model trait with a Magic Formula-family implementation
-- Combined slip, load/camber sensitivity, thermal state, wear, pressure, contact-patch state, wet grip and hydroplaning
+- Combined slip, finite lateral-force peak/sliding branch, distance-based slip relaxation, two-node thermal energy state, wear, pressure, contact-patch state, wet grip and hydroplaning
 - Progressive puncture, blowout, bead unseating and damaged-carcass behavior
 - Four-wheel spring/damper suspension, travel, bump stops and anti-roll coupling
 - RWD ICE, torque curve, RPM inertia, fuel mass, clutch, manual/automatic-compatible gear requests and open differential
@@ -56,7 +56,7 @@ All internal quantities use SI units and radians. Coordinates are right-handed a
 
 ## Fidelity and honest limitations
 
-The tire implementation is Magic Formula-family, not a fitted proprietary Pacejka parameter set. Suspension uses vertical spring/damper rays rather than hard-point kinematics. Deformation modifies a parameterized collision envelope rather than a finite-element mesh. The collision and deformation models are suitable for vehicle behavior and regression work, not crash analysis. Cross-CPU bitwise determinism, advanced aero maps, transient brush tires, detailed debris interactions and production multiplayer correction are roadmap items.
+The tire implementation is Magic Formula-family with first-order slip relaxation, not a fitted proprietary Pacejka parameter set or a transient brush model. Its effective thermal constants are authored rather than measured. See [Reference tire](docs/tire-model.md). Suspension uses vertical spring/damper rays rather than hard-point kinematics. Deformation modifies a parameterized collision envelope rather than a finite-element mesh. The collision and deformation models are suitable for vehicle behavior and regression work, not crash analysis. Cross-CPU bitwise determinism, advanced aero maps, transient brush tires, detailed debris interactions and production multiplayer correction are roadmap items.
 
 WebGPU is intentionally not used in v0.1: ten vehicles at this fidelity fit the WASM/CPU path, and GPU parallel reduction would complicate deterministic execution without a measured benefit. The architecture reserves accelerators for explicitly non-authoritative or deterministically validated workloads.
 

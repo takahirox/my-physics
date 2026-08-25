@@ -19,7 +19,7 @@ use crate::world::{Fidelity, InputFrame, SimulationConfig, Snapshot};
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"MYPHY001";
 const INPUT_MAGIC: &[u8; 8] = b"MYINP001";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const INPUT_VERSION: u32 = 2;
 const MAX_ITEMS: usize = 1_000_000;
 
@@ -754,24 +754,49 @@ fn write_wheel_state(w: &mut Writer, value: WheelState) {
     for number in [value.last_normal_load_n, value.longitudinal_slip, value.slip_angle_rad] {
         w.f64(number);
     }
+    if w.version >= 4 {
+        w.f64(value.transient_slip_angle_rad);
+        w.f64(value.relaxation_length_m);
+    }
 }
 
 fn read_wheel_state(r: &mut Reader<'_>) -> Result<WheelState, ArchiveError> {
+    let angular_velocity_rad_s = r.f64()?;
+    let rotation_rad = r.f64()?;
+    let suspension_compression_m = r.f64()?;
+    let previous_compression_m = r.f64()?;
+    let steer_angle_rad = r.f64()?;
+    let camber_rad = r.f64()?;
+    let brake_temperature_k = r.f64()?;
+    let brake_wear = r.f64()?;
+    let wheel_damage = r.f64()?;
+    let tire = read_tire_state(r)?;
+    let last_tire_output = read_tire_output(r)?;
+    let last_normal_load_n = r.f64()?;
+    let longitudinal_slip = r.f64()?;
+    let slip_angle_rad = r.f64()?;
+    let (transient_slip_angle_rad, relaxation_length_m) = if r.version >= 4 {
+        (r.f64()?, r.f64()?)
+    } else {
+        (slip_angle_rad, MagicFormulaTire::default().relaxation_length_m)
+    };
     Ok(WheelState {
-        angular_velocity_rad_s: r.f64()?,
-        rotation_rad: r.f64()?,
-        suspension_compression_m: r.f64()?,
-        previous_compression_m: r.f64()?,
-        steer_angle_rad: r.f64()?,
-        camber_rad: r.f64()?,
-        brake_temperature_k: r.f64()?,
-        brake_wear: r.f64()?,
-        wheel_damage: r.f64()?,
-        tire: read_tire_state(r)?,
-        last_tire_output: read_tire_output(r)?,
-        last_normal_load_n: r.f64()?,
-        longitudinal_slip: r.f64()?,
-        slip_angle_rad: r.f64()?,
+        angular_velocity_rad_s,
+        rotation_rad,
+        suspension_compression_m,
+        previous_compression_m,
+        steer_angle_rad,
+        camber_rad,
+        brake_temperature_k,
+        brake_wear,
+        wheel_damage,
+        tire,
+        last_tire_output,
+        last_normal_load_n,
+        longitudinal_slip,
+        slip_angle_rad,
+        transient_slip_angle_rad,
+        relaxation_length_m,
     })
 }
 
@@ -829,10 +854,13 @@ fn write_tire_output(w: &mut Writer, value: TireOutput) {
     ] {
         w.f64(number);
     }
+    if w.version >= 4 {
+        w.f64(value.road_heat_w);
+    }
 }
 
 fn read_tire_output(r: &mut Reader<'_>) -> Result<TireOutput, ArchiveError> {
-    Ok(TireOutput {
+    let mut value = TireOutput {
         longitudinal_force_n: r.f64()?,
         lateral_force_n: r.f64()?,
         aligning_moment_nm: r.f64()?,
@@ -840,7 +868,12 @@ fn read_tire_output(r: &mut Reader<'_>) -> Result<TireOutput, ArchiveError> {
         hydroplaning: r.f64()?,
         friction_coefficient: r.f64()?,
         slip_power_w: r.f64()?,
-    })
+        road_heat_w: 0.0,
+    };
+    if r.version >= 4 {
+        value.road_heat_w = r.f64()?;
+    }
+    Ok(value)
 }
 
 fn write_powertrain_state(w: &mut Writer, value: PowertrainState) {
@@ -1121,17 +1154,49 @@ fn write_tire_model(w: &mut Writer, value: MagicFormulaTire) {
     ] {
         w.f64(number);
     }
+    if w.version >= 4 {
+        for number in [
+            value.lateral_shape_factor,
+            value.lateral_curvature_factor,
+            value.pneumatic_trail_m,
+            value.relaxation_length_m,
+            value.tread_heat_capacity_j_k,
+            value.bulk_heat_capacity_j_k,
+            value.slip_heat_fraction_to_tread,
+            value.tread_bulk_conductance_w_k,
+            value.tread_road_conductance_w_k,
+            value.still_air_conductance_w_k,
+            value.speed_air_conductance_w_k_per_mps,
+        ] {
+            w.f64(number);
+        }
+    }
 }
 
 fn read_tire_model(r: &mut Reader<'_>) -> Result<MagicFormulaTire, ArchiveError> {
-    Ok(MagicFormulaTire {
+    let mut value = MagicFormulaTire {
         nominal_load_n: r.f64()?,
         nominal_pressure_pa: r.f64()?,
         peak_mu: r.f64()?,
         longitudinal_stiffness: r.f64()?,
         lateral_stiffness: r.f64()?,
         optimum_temperature_k: r.f64()?,
-    })
+        ..MagicFormulaTire::default()
+    };
+    if r.version >= 4 {
+        value.lateral_shape_factor = r.f64()?;
+        value.lateral_curvature_factor = r.f64()?;
+        value.pneumatic_trail_m = r.f64()?;
+        value.relaxation_length_m = r.f64()?;
+        value.tread_heat_capacity_j_k = r.f64()?;
+        value.bulk_heat_capacity_j_k = r.f64()?;
+        value.slip_heat_fraction_to_tread = r.f64()?;
+        value.tread_bulk_conductance_w_k = r.f64()?;
+        value.tread_road_conductance_w_k = r.f64()?;
+        value.still_air_conductance_w_k = r.f64()?;
+        value.speed_air_conductance_w_k_per_mps = r.f64()?;
+    }
+    Ok(value)
 }
 
 fn write_static_collider(w: &mut Writer, value: &StaticCollider) {
@@ -1300,5 +1365,21 @@ mod tests {
             assert!(provenance.source.contains("legacy snapshot"));
             assert_eq!(provenance.revision, "snapshot-v2");
         }
+    }
+
+    #[test]
+    fn version_three_snapshot_migrates_transient_tire_state_without_inventing_history() {
+        let mut world = PhysicsWorld::demo(1);
+        world.vehicles[0].state.wheels[0].slip_angle_rad = 0.12;
+        world.vehicles[0].state.wheels[0].transient_slip_angle_rad = 0.04;
+        world.vehicles[0].state.wheels[0].relaxation_length_m = 0.72;
+        let snapshot = world.snapshot();
+        let decoded = decode_snapshot(&encode_snapshot_version(&snapshot, 3)).unwrap();
+        let wheel = decoded.vehicles[0].state.wheels[0];
+
+        assert_eq!(wheel.transient_slip_angle_rad, wheel.slip_angle_rad);
+        assert_eq!(wheel.relaxation_length_m, crate::tire::MagicFormulaTire::default().relaxation_length_m);
+        assert_eq!(decoded.tire_model, crate::tire::MagicFormulaTire::default());
+        assert_eq!(decoded.vehicles[0].definition.provenance, snapshot.vehicles[0].definition.provenance);
     }
 }

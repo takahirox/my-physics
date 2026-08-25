@@ -362,7 +362,11 @@ pub struct WheelState {
     pub last_tire_output: TireOutput,
     pub last_normal_load_n: f64,
     pub longitudinal_slip: f64,
+    /// Kinematic contact slip before carcass relaxation.
     pub slip_angle_rad: f64,
+    /// Relaxed slip consumed by the tire force model.
+    pub transient_slip_angle_rad: f64,
+    pub relaxation_length_m: f64,
 }
 
 impl Default for WheelState {
@@ -382,6 +386,8 @@ impl Default for WheelState {
             last_normal_load_n: 0.0,
             longitudinal_slip: 0.0,
             slip_angle_rad: 0.0,
+            transient_slip_angle_rad: 0.0,
+            relaxation_length_m: MagicFormulaTire::default().relaxation_length_m,
         }
     }
 }

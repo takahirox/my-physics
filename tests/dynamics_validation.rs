@@ -39,6 +39,7 @@ fn dry_longitudinal_magic_formula_has_peak_and_locked_slide_envelope() {
                     normal_load_n: model.nominal_load_n,
                     longitudinal_slip: slip,
                     slip_angle_rad: 0.0,
+                    lateral_slip_speed_mps: 0.0,
                     camber_rad: 0.0,
                     speed_mps: 30.0,
                     road: RoadCell::default(),

@@ -258,6 +258,7 @@ fn wet_road_reduces_available_friction() {
         normal_load_n: 3700.0,
         longitudinal_slip: 0.12,
         slip_angle_rad: 0.0,
+        lateral_slip_speed_mps: 0.0,
         camber_rad: 0.0,
         speed_mps: 30.0,
         road: RoadCell { water_depth_m: water, ..RoadCell::default() },
@@ -277,6 +278,7 @@ fn puncture_has_progressive_physical_state() {
         normal_load_n: 3700.0,
         longitudinal_slip: 0.1,
         slip_angle_rad: 0.03,
+        lateral_slip_speed_mps: 35.0 * 0.03_f64.tan(),
         camber_rad: 0.0,
         speed_mps: 35.0,
         road: RoadCell::default(),
@@ -382,13 +384,21 @@ fn variable_substeps_preserve_automatic_shift_timing_and_acceleration() {
 }
 
 #[test]
-fn fingerprint_changes_for_thermal_and_brake_state() {
+fn fingerprint_changes_for_thermal_brake_and_transient_tire_state() {
     let world = PhysicsWorld::demo(1);
     let baseline = world.state_fingerprint();
 
     let mut engine_changed = world.clone();
     engine_changed.vehicles[0].state.powertrain.engine_temperature_k += 75.0;
     assert_ne!(engine_changed.state_fingerprint(), baseline);
+
+    let mut transient_changed = world.clone();
+    transient_changed.vehicles[0].state.wheels[0].transient_slip_angle_rad += 0.1;
+    assert_ne!(transient_changed.state_fingerprint(), baseline);
+
+    let mut relaxation_changed = world.clone();
+    relaxation_changed.vehicles[0].state.wheels[0].relaxation_length_m += 0.1;
+    assert_ne!(relaxation_changed.state_fingerprint(), baseline);
 
     let mut brake_changed = world;
     brake_changed.vehicles[0].state.wheels[0].brake_temperature_k += 400.0;
@@ -570,10 +580,10 @@ fn reference_scenario_matches_cross_platform_golden_telemetry() {
     world.set_input(0, DriverInput { throttle: 0.72, ..DriverInput::default() }).unwrap();
     world.step_fixed(2_000).unwrap();
     let telemetry = &world.vehicles[0].telemetry;
-    assert!((telemetry.speed_mps - 7.748_260_464_512).abs() < 0.02);
-    assert!((telemetry.position_m.z - -7.177_284_605_317).abs() < 0.02);
-    assert!((telemetry.engine_rpm - 3_673.300_127_305).abs() < 5.0);
-    assert!((telemetry.fuel_kg - 39.993_887_963_995).abs() < 0.000_1);
-    assert!((telemetry.tire_temperature_k[0] - 321.615_950_350_910).abs() < 0.05);
-    assert!((telemetry.tire_temperature_k[2] - 323.220_169_888_282).abs() < 0.05);
+    assert!((telemetry.speed_mps - 7.718_630_474_731).abs() < 0.02);
+    assert!((telemetry.position_m.z - -7.144_118_594_138).abs() < 0.02);
+    assert!((telemetry.engine_rpm - 3_660.233_751_780).abs() < 5.0);
+    assert!((telemetry.fuel_kg - 39.993_943_873_818).abs() < 0.000_1);
+    assert!((telemetry.tire_temperature_k[0] - 322.992_035_717_193).abs() < 0.05);
+    assert!((telemetry.tire_temperature_k[2] - 322.995_707_919_686).abs() < 0.05);
 }

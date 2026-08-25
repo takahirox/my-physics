@@ -3,7 +3,7 @@ use crate::collision::{CollisionShape, DetachedBody, StaticCollider, oriented_bo
 use crate::controls::DriverInput;
 use crate::math::{Quat, Vec3, clamp01, semi_implicit_linear_step};
 use crate::road::DynamicRoad;
-use crate::tire::{MagicFormulaTire, TireInput};
+use crate::tire::{MagicFormulaTire, TireInput, transient_slip_step};
 use crate::vehicle::{Vehicle, VehicleDefinition, aerodynamic_drag_magnitude_n, evaluate_tire};
 
 /// Inner face of the barriers on the procedural v0.1 demonstration circuit.
@@ -606,15 +606,32 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
                 peak_mu: tire_model.peak_mu * wdef.tire_peak_grip_scale.clamp(0.5, 2.0),
                 ..tire_model
             };
+            let pressure_ratio =
+                (ws.tire.pressure_pa / fitted_tire_model.nominal_pressure_pa.max(1.0)).clamp(0.05, 1.5);
+            let load_ratio = (normal / fitted_tire_model.nominal_load_n.max(1.0)).clamp(0.05, 3.0);
+            ws.relaxation_length_m = (fitted_tire_model.relaxation_length_m * pressure_ratio.sqrt()
+                / load_ratio.powf(0.15)
+                * (1.0 - 0.4 * ws.tire.carcass_damage))
+                .clamp(0.08, 1.2);
+            ws.transient_slip_angle_rad = transient_slip_step(
+                ws.transient_slip_angle_rad,
+                ws.slip_angle_rad,
+                longitudinal,
+                ws.relaxation_length_m,
+                dt * lod_stride,
+            );
             let tire = evaluate_tire(
                 &fitted_tire_model,
                 &mut ws.tire,
                 TireInput {
                     normal_load_n: normal,
                     longitudinal_slip: ws.longitudinal_slip,
-                    slip_angle_rad: ws.slip_angle_rad,
+                    slip_angle_rad: ws.transient_slip_angle_rad,
+                    lateral_slip_speed_mps: lateral,
                     camber_rad: ws.camber_rad,
-                    speed_mps: contact_velocity.length(),
+                    // Tire slip energy and relaxation use longitudinal contact
+                    // speed; lateral sliding speed is Vx*tan(alpha).
+                    speed_mps: longitudinal.abs(),
                     road: road.sample(contact),
                     dt: dt * lod_stride,
                 },
@@ -644,7 +661,12 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             ws.brake_temperature_k +=
                 (brake_power * 0.00055 + (300.0 - ws.brake_temperature_k) * 0.016) * dt * lod_stride;
             ws.brake_wear = (ws.brake_wear + brake_power * 4.0e-11 * dt * lod_stride).clamp(0.0, 1.0);
-            road.interact(contact, tire.slip_power_w * dt * lod_stride, ws.tire.tread_temperature_k, dt * lod_stride);
+            road.interact_with_heat(
+                contact,
+                tire.slip_power_w * dt * lod_stride,
+                tire.road_heat_w * dt * lod_stride,
+                dt * lod_stride,
+            );
         }
         let lod_blend = if lod_stride <= 1.0 { 1.0 } else { clamp01(dt * lod_stride / 0.05) };
         v.cached_force = v.cached_force.lerp(force, lod_blend);

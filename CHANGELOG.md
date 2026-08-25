@@ -1,5 +1,7 @@
 # Changelog
 
+- Reworked the authored reference tire with a finite lateral-force peak/sliding branch, slip-decaying pneumatic trail, serialized distance-based relaxation and a two-node thermal energy model.
+
 - Split the engineering-reference and race-gameplay vehicle presets without changing the physical plant, and added versioned parameter provenance metadata.
 
 ## 0.1.0 — implementation complete, release administration pending

@@ -1,6 +1,7 @@
 //! Replaceable tire model and a deterministic Magic-Formula-family reference.
 
 use crate::math::{clamp01, smoothstep};
+use crate::provenance::{ParameterOrigin, ParameterProvenance, ParameterValidity};
 use crate::road::RoadCell;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,7 +43,11 @@ impl Default for TireState {
 pub struct TireInput {
     pub normal_load_n: f64,
     pub longitudinal_slip: f64,
+    /// Relaxed slip angle used to calculate lateral force.
     pub slip_angle_rad: f64,
+    /// Actual lateral contact velocity used for frictional work, kept separate
+    /// from the relaxed angle that determines force.
+    pub lateral_slip_speed_mps: f64,
     pub camber_rad: f64,
     pub speed_mps: f64,
     pub road: RoadCell,
@@ -58,6 +63,8 @@ pub struct TireOutput {
     pub hydroplaning: f64,
     pub friction_coefficient: f64,
     pub slip_power_w: f64,
+    /// Frictional partition plus signed tread/road conductive heat.
+    pub road_heat_w: f64,
 }
 
 pub trait TireModel {
@@ -72,6 +79,17 @@ pub struct MagicFormulaTire {
     pub longitudinal_stiffness: f64,
     pub lateral_stiffness: f64,
     pub optimum_temperature_k: f64,
+    pub lateral_shape_factor: f64,
+    pub lateral_curvature_factor: f64,
+    pub pneumatic_trail_m: f64,
+    pub relaxation_length_m: f64,
+    pub tread_heat_capacity_j_k: f64,
+    pub bulk_heat_capacity_j_k: f64,
+    pub slip_heat_fraction_to_tread: f64,
+    pub tread_bulk_conductance_w_k: f64,
+    pub tread_road_conductance_w_k: f64,
+    pub still_air_conductance_w_k: f64,
+    pub speed_air_conductance_w_k_per_mps: f64,
 }
 
 impl Default for MagicFormulaTire {
@@ -83,6 +101,17 @@ impl Default for MagicFormulaTire {
             longitudinal_stiffness: 11.5,
             lateral_stiffness: 8.5,
             optimum_temperature_k: 353.15,
+            lateral_shape_factor: 1.35,
+            lateral_curvature_factor: -1.0,
+            pneumatic_trail_m: 0.055,
+            relaxation_length_m: 0.45,
+            tread_heat_capacity_j_k: 14_000.0,
+            bulk_heat_capacity_j_k: 38_000.0,
+            slip_heat_fraction_to_tread: 0.82,
+            tread_bulk_conductance_w_k: 120.0,
+            tread_road_conductance_w_k: 65.0,
+            still_air_conductance_w_k: 18.0,
+            speed_air_conductance_w_k_per_mps: 1.1,
         }
     }
 }
@@ -124,7 +153,14 @@ impl TireModel for MagicFormulaTire {
         // locked-wheel slip of one. Combined demand is normalized below.
         let bx = self.longitudinal_stiffness * i.longitudinal_slip;
         let sx = (1.9 * (bx - 0.94 * (bx - bx.atan())).atan()).sin();
-        let sy = (self.lateral_stiffness * i.slip_angle_rad).atan().sin();
+        // Preserve the original small-angle gradient (`d sy / d alpha` is
+        // `lateral_stiffness`) while adding a finite peak and a lower sliding
+        // branch at large slip. The authored C/E pair is Magic-Formula-family,
+        // not a proprietary fitted tire data set.
+        let cy = self.lateral_shape_factor.max(1.01);
+        let by = self.lateral_stiffness / cy;
+        let bay = by * i.slip_angle_rad;
+        let sy = (cy * (bay - self.lateral_curvature_factor * (bay - bay.atan())).atan()).sin();
         let combined = (sx * sx + sy * sy).sqrt().max(1.0);
         let peak = mu * i.normal_load_n;
         let raw_fx = peak * sx / combined;
@@ -133,15 +169,15 @@ impl TireModel for MagicFormulaTire {
         let ellipse = (raw_fx * raw_fx + raw_fy * raw_fy).sqrt().max(peak);
         let fx = raw_fx * peak / ellipse;
         let fy = raw_fy * peak / ellipse;
-        let trail = 0.055 * (1.0 - state.wear) * pressure_ratio.sqrt();
+        let trail_decay = (-(i.slip_angle_rad.abs() / 0.14).powi(2)).exp();
+        let trail = self.pneumatic_trail_m * trail_decay * (1.0 - state.wear) * pressure_ratio.sqrt();
         let rr_coeff = 0.012 + 0.025 * (1.0 - pressure_ratio).max(0.0) + 0.08 * state.carcass_damage;
         let rr = rr_coeff * i.normal_load_n;
-        let slip_power =
-            (fx * (i.longitudinal_slip * i.speed_mps)).abs() + (fy * (i.slip_angle_rad * i.speed_mps)).abs();
+        let slip_power = (fx * (i.longitudinal_slip * i.speed_mps)).abs() + (fy * i.lateral_slip_speed_mps).abs();
         state.contact_patch_m2 =
             (i.normal_load_n / (state.pressure_pa.max(15_000.0)) * 0.78 * (1.0 + 0.5 * state.carcass_damage))
                 .clamp(0.004, 0.12);
-        self.evolve(state, i, slip_power);
+        let road_heat_w = self.evolve(state, i, slip_power);
         TireOutput {
             longitudinal_force_n: fx,
             lateral_force_n: fy,
@@ -150,16 +186,49 @@ impl TireModel for MagicFormulaTire {
             hydroplaning: hydro,
             friction_coefficient: mu,
             slip_power_w: slip_power,
+            road_heat_w,
         }
     }
 }
 
 impl MagicFormulaTire {
-    fn evolve(&self, s: &mut TireState, i: TireInput, slip_power: f64) {
-        let road_exchange = (i.road.temperature_k - s.tread_temperature_k) * 0.045;
-        let air_exchange = (293.15 - s.temperature_k) * 0.006;
-        s.tread_temperature_k += (slip_power * 0.0018 + road_exchange) * i.dt;
-        s.temperature_k += ((s.tread_temperature_k - s.temperature_k) * 0.08 + air_exchange) * i.dt;
+    pub fn parameter_provenance(&self) -> ParameterProvenance {
+        ParameterProvenance::new(
+            ParameterOrigin::Authored,
+            "v0.1 Magic-Formula-family prototype calibration; no tire-rig or OEM measurement",
+            "transient-thermal-v1",
+            None,
+            vec![
+                ParameterValidity::new("lateral_shape_factor", "ratio", 1.01, 2.0),
+                ParameterValidity::new("lateral_curvature_factor", "ratio", -3.0, 1.0),
+                ParameterValidity::new("pneumatic_trail", "m", 0.0, 0.2),
+                ParameterValidity::new("relaxation_length", "m", 0.05, 2.0),
+                ParameterValidity::new("tread_heat_capacity", "J/K", 1_000.0, 100_000.0),
+                ParameterValidity::new("bulk_heat_capacity", "J/K", 1_000.0, 200_000.0),
+                ParameterValidity::new("slip_heat_fraction_to_tread", "ratio", 0.0, 1.0),
+                ParameterValidity::new("tread_bulk_conductance", "W/K", 0.0, 1_000.0),
+                ParameterValidity::new("tread_road_conductance", "W/K", 0.0, 1_000.0),
+                ParameterValidity::new("still_air_conductance", "W/K", 0.0, 1_000.0),
+                ParameterValidity::new("speed_air_conductance", "W/K/(m/s)", 0.0, 100.0),
+            ],
+        )
+    }
+
+    fn evolve(&self, s: &mut TireState, i: TireInput, slip_power: f64) -> f64 {
+        let tire_fraction = self.slip_heat_fraction_to_tread.clamp(0.0, 1.0);
+        let friction_to_tread_w = slip_power * tire_fraction;
+        let friction_to_road_w = slip_power * (1.0 - tire_fraction);
+        let contact_scale = clamp01(i.normal_load_n / self.nominal_load_n.max(1.0));
+        let tread_to_road_w =
+            self.tread_road_conductance_w_k.max(0.0) * contact_scale * (s.tread_temperature_k - i.road.temperature_k);
+        let tread_to_bulk_w = self.tread_bulk_conductance_w_k.max(0.0) * (s.tread_temperature_k - s.temperature_k);
+        let air_conductance =
+            self.still_air_conductance_w_k.max(0.0) + self.speed_air_conductance_w_k_per_mps.max(0.0) * i.speed_mps;
+        let bulk_to_air_w = air_conductance * (s.temperature_k - 293.15);
+        let tread_capacity = self.tread_heat_capacity_j_k.max(1.0);
+        let bulk_capacity = self.bulk_heat_capacity_j_k.max(1.0);
+        s.tread_temperature_k += (friction_to_tread_w - tread_to_road_w - tread_to_bulk_w) / tread_capacity * i.dt;
+        s.temperature_k += (tread_to_bulk_w - bulk_to_air_w) / bulk_capacity * i.dt;
         s.wear = (s.wear + slip_power * 2.0e-9 * i.dt * (1.0 + ((s.tread_temperature_k - 390.0) / 30.0).max(0.0)))
             .clamp(0.0, 1.0);
         if s.puncture_area_m2 > 0.0 {
@@ -178,5 +247,18 @@ impl MagicFormulaTire {
             s.carcass_damage =
                 (s.carcass_damage + (80_000.0 - s.pressure_pa) * i.speed_mps * 2.0e-11 * i.dt).clamp(0.0, 1.0);
         }
+        friction_to_road_w + tread_to_road_w
     }
+}
+
+/// Exact first-order transient-slip update over a travelled distance. The
+/// low-speed fade prevents a noisy atan2 contact velocity from freezing a
+/// non-zero tire force as the vehicle stops.
+pub fn transient_slip_step(current: f64, kinematic: f64, speed_mps: f64, relaxation_length_m: f64, dt: f64) -> f64 {
+    let speed = speed_mps.abs();
+    let low_speed_weight = clamp01((speed - 0.25) / 1.25);
+    let target = kinematic * low_speed_weight;
+    let transport_speed = speed.max(0.5);
+    let blend = 1.0 - (-transport_speed * dt.max(0.0) / relaxation_length_m.max(0.01)).exp();
+    current + (target - current) * blend
 }

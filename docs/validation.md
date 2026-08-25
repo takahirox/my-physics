@@ -83,6 +83,8 @@ The integration suite currently covers:
 | analytical integration | semi-implicit constant-acceleration result matches its discrete closed form |
 | force constraint | combined tire force remains within the computed friction circle |
 | dry longitudinal tire curve | the reference tire peaks between 10–20% slip and locked-wheel sliding force remains 70–90% of peak |
+| lateral tire curve and transients | low-slip gradient is retained; lateral force has a finite peak/sliding branch, aligning trail decays, distance-based relaxation is speed/dt invariant and serialized |
+| tire thermal energy | tread/bulk/road/air ledger, severe-slip and release bounds, 0.5–20 ms convergence and 50/100/140 km/h steering matrices |
 | dry ABS envelope | 100 km/h stopping distance, lock duration, target-slip occupancy, ABS-off comparison and mid-stop snapshot/resimulation are bounded |
 | limit cornering | two friction-feasible high-g steering ramps remain forward-facing, low-slip and left/right symmetric; a low-g ramp remains within 5% of the bicycle reference |
 | collision primitives | rotated box, capsule, convex and vehicle pair fixtures produce contacts/damage |
@@ -98,6 +100,12 @@ The integration suite currently covers:
 The chassis uses semi-implicit Euler integration at 1 ms, which is robust for the current stiff but bounded forces. Tire forces are constrained by a combined-slip friction ellipse. Flat-road suspension reactions and tire forces use the road-normal/tangent basis rather than feeding chassis roll into the contact plane. Suspension travel, normal force and high-risk ratios are bounded. Every step rejects non-finite primary vehicle state.
 
 The engineering-reference RWD definition uses symmetric 1.0 tire-fitment scales. The separate browser race preset assigns authored rear-tire scales of 1.05 cornering stiffness and 1.06 peak grip to provide a measurable understeer gradient. It is a game calibration, not a measured vehicle fit or a claim of real-world correlation. Both presets use identical physical equations and expose their provenance.
+
+The reference tire's relaxation and two-node thermal constants are authored and
+dimensionally explicit. Their physical-law gates cover force bounds, symmetry,
+distance response and energy balance; temperature and handling bands remain
+authored regression criteria until measured tire data is available. Detailed
+equations and before/after traces are in [Reference tire](tire-model.md).
 
 ## Required next validation
 

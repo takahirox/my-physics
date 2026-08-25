@@ -60,12 +60,19 @@ impl DynamicRoad {
         self.index(p).map_or_else(RoadCell::default, |i| self.cells[i])
     }
     pub fn interact(&mut self, p: Vec3, slip_energy_j: f64, tire_temp_k: f64, dt: f64) {
+        let legacy_exchange_j = (tire_temp_k - self.sample(p).temperature_k) * 400.0 * dt;
+        self.interact_with_heat(p, slip_energy_j, slip_energy_j + legacy_exchange_j, dt);
+    }
+
+    /// Applies mechanical slip work and the tire model's separately
+    /// partitioned heat delivered to the road.
+    pub fn interact_with_heat(&mut self, p: Vec3, slip_energy_j: f64, road_heat_j: f64, dt: f64) {
         let Some(i) = self.index(p) else {
             return;
         };
         let c = &mut self.cells[i];
         c.rubber = (c.rubber + slip_energy_j * 1.0e-8).clamp(0.0, 1.0);
-        c.temperature_k += (tire_temp_k - c.temperature_k) * 0.0008 * dt + slip_energy_j * 2.0e-6;
+        c.temperature_k += road_heat_j * 2.0e-6;
         c.water_depth_m = (c.water_depth_m - (0.00002 + slip_energy_j * 2.0e-10) * dt).max(0.0);
     }
     pub fn update_weather(&mut self, rain_rate_m_s: f64, dt: f64) {
