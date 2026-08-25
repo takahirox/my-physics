@@ -124,10 +124,96 @@ fn presets_share_equations_and_expose_the_complete_authored_difference() {
         wheel.tire_peak_grip_scale = 1.0;
     }
     assert_eq!(normalized, engineering, "preset has an undocumented physical parameter difference");
+
+    let arcade = VehicleDefinition::from_preset(VehiclePreset::ArcadeFun);
+    assert_eq!(arcade.name, "RWD Arcade Fun");
+    assert!(arcade.provenance.is_complete());
+    for (group, provenance) in arcade.provenance.groups() {
+        assert_ne!(provenance.origin, ParameterOrigin::Measured, "{group} claims unavailable measurements");
+        if group != "fuel_system" {
+            assert_eq!(provenance.revision, "arcade-fun-v1", "changed group {group} lacks Arcade provenance");
+            assert!(provenance.source.contains("authored differences"));
+            assert!(provenance.source.contains("no measured"));
+        }
+    }
+    for (name, value) in [
+        ("dry_mass", arcade.chassis.dry_mass_kg),
+        ("inertia_x", arcade.chassis.inertia_kg_m2.x),
+        ("inertia_y", arcade.chassis.inertia_kg_m2.y),
+        ("inertia_z", arcade.chassis.inertia_kg_m2.z),
+    ] {
+        assert_value(&arcade.provenance.chassis_mass_properties, name, value);
+    }
+    assert_value(&arcade.provenance.aerodynamics, "drag_coefficient", arcade.chassis.drag_coefficient);
+    assert_value(&arcade.provenance.aerodynamics, "lift_coefficient", arcade.chassis.lift_coefficient);
+    assert_wheel_group(&arcade.provenance.front_wheels_and_tires, "front", &arcade.wheels[0]);
+    assert_wheel_group(&arcade.provenance.rear_wheels_and_tires, "rear", &arcade.wheels[2]);
+    for wheel in [arcade.wheels[0], arcade.wheels[2]] {
+        for (name, value) in [("spring_rate", wheel.spring_rate_n_m), ("damper_rate", wheel.damper_rate_n_s_m)] {
+            assert_value(&arcade.provenance.suspension, name, value);
+        }
+    }
+    assert_value(&arcade.provenance.suspension, "anti_roll_rate", arcade.anti_roll_rate_n_m_rad);
+    assert_value(&arcade.provenance.brakes, "front_brake_torque", arcade.wheels[0].brake_torque_nm);
+    assert_value(&arcade.provenance.brakes, "rear_brake_torque", arcade.wheels[2].brake_torque_nm);
+    assert_value(&arcade.provenance.engine, "engine_inertia", arcade.engine.inertia_kg_m2);
+    for (speed, torque) in arcade.engine.torque_curve {
+        assert_value(&arcade.provenance.engine, "torque_curve_speed", speed);
+        assert_value(&arcade.provenance.engine, "torque_curve_torque", torque);
+    }
+    for (name, value) in [
+        ("final_drive", arcade.transmission.final_drive),
+        ("shift_time", arcade.transmission.shift_time_s),
+        ("clutch_capacity", arcade.transmission.clutch_capacity_nm),
+    ] {
+        assert_value(&arcade.provenance.transmission_and_clutch, name, value);
+    }
+
+    // Enumerate every physical delta. If a future edit adds a hidden preset
+    // difference, this normalization will stop matching the reference.
+    let mut documented = arcade;
+    documented.name = engineering.name.clone();
+    documented.provenance = engineering.provenance.clone();
+    documented.chassis.dry_mass_kg = engineering.chassis.dry_mass_kg;
+    documented.chassis.inertia_kg_m2 = engineering.chassis.inertia_kg_m2;
+    documented.chassis.drag_coefficient = engineering.chassis.drag_coefficient;
+    documented.chassis.lift_coefficient = engineering.chassis.lift_coefficient;
+    for (wheel, reference) in documented.wheels.iter_mut().zip(&engineering.wheels) {
+        wheel.cornering_stiffness_scale = reference.cornering_stiffness_scale;
+        wheel.tire_peak_grip_scale = reference.tire_peak_grip_scale;
+        wheel.spring_rate_n_m = reference.spring_rate_n_m;
+        wheel.damper_rate_n_s_m = reference.damper_rate_n_s_m;
+        wheel.brake_torque_nm = reference.brake_torque_nm;
+    }
+    documented.anti_roll_rate_n_m_rad = engineering.anti_roll_rate_n_m_rad;
+    documented.engine.inertia_kg_m2 = engineering.engine.inertia_kg_m2;
+    documented.engine.torque_curve = engineering.engine.torque_curve;
+    documented.transmission.final_drive = engineering.transmission.final_drive;
+    documented.transmission.shift_time_s = engineering.transmission.shift_time_s;
+    documented.transmission.clutch_capacity_nm = engineering.transmission.clutch_capacity_nm;
+    assert_eq!(documented, engineering, "Arcade preset has an undocumented physical parameter difference");
 }
 
 #[test]
 fn demo_selects_the_race_preset_explicitly() {
     let world = PhysicsWorld::demo(1);
     assert_eq!(world.vehicles[0].definition, VehicleDefinition::race_gameplay());
+}
+
+#[test]
+fn arcade_demo_selects_authored_definition_without_a_second_plant() {
+    let arcade = PhysicsWorld::demo_with_preset(1, VehiclePreset::ArcadeFun);
+    assert_eq!(arcade.vehicles[0].definition, VehicleDefinition::arcade_fun());
+    assert!(arcade.vehicles[0].driver_aids.traction_control_enabled);
+    assert!(!arcade.vehicles[0].driver_aids.stability_control_enabled);
+
+    let mut selected = PhysicsWorld::demo_with_preset(1, VehiclePreset::ArcadeFun);
+    let mut substituted = PhysicsWorld::demo(1);
+    substituted.vehicles[0].definition = VehicleDefinition::arcade_fun();
+    let input = my_physics::DriverInput { steering: 0.1, throttle: 0.7, ..Default::default() };
+    selected.set_input_unrecorded(0, input).unwrap();
+    substituted.set_input_unrecorded(0, input).unwrap();
+    selected.step_fixed(2_000).unwrap();
+    substituted.step_fixed(2_000).unwrap();
+    assert_eq!(selected.snapshot(), substituted.snapshot(), "demo selector leaked into the physical equations");
 }

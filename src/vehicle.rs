@@ -87,6 +87,9 @@ pub struct VehicleDefinition {
 pub enum VehiclePreset {
     EngineeringReference,
     RaceGameplay,
+    /// Deliberately exaggerated authored data for the arcade browser demo.
+    /// This selects parameter values only; it does not select another plant.
+    ArcadeFun,
 }
 
 impl Default for VehicleDefinition {
@@ -102,6 +105,7 @@ impl VehicleDefinition {
         match preset {
             VehiclePreset::EngineeringReference => Self::engineering_reference(),
             VehiclePreset::RaceGameplay => Self::race_gameplay(),
+            VehiclePreset::ArcadeFun => Self::arcade_fun(),
         }
     }
 
@@ -199,6 +203,95 @@ impl VehicleDefinition {
             None,
             wheel_ranges(false),
         );
+        definition
+    }
+
+    /// An intentionally exaggerated, drift-friendly vehicle definition for
+    /// games. All fields keep their normal SI meaning and are consumed by the
+    /// same chassis, tire, suspension, powertrain, brake, damage and collision
+    /// equations as the engineering and race presets.
+    pub fn arcade_fun() -> Self {
+        let mut definition = Self::engineering_reference();
+        definition.name = "RWD Arcade Fun".into();
+
+        definition.chassis.dry_mass_kg = 1_160.0;
+        definition.chassis.inertia_kg_m2 = Vec3::new(520.0, 1_180.0, 1_320.0);
+        definition.chassis.drag_coefficient = 0.34;
+        definition.chassis.lift_coefficient = -1.15;
+
+        for wheel in &mut definition.wheels[..2] {
+            wheel.cornering_stiffness_scale = 1.18;
+            wheel.tire_peak_grip_scale = 1.24;
+            wheel.spring_rate_n_m = 48_000.0;
+            wheel.damper_rate_n_s_m = 4_800.0;
+            wheel.brake_torque_nm = 4_100.0;
+        }
+        for wheel in &mut definition.wheels[2..] {
+            wheel.cornering_stiffness_scale = 1.238;
+            wheel.tire_peak_grip_scale = 1.234;
+            wheel.spring_rate_n_m = 44_000.0;
+            wheel.damper_rate_n_s_m = 4_500.0;
+            wheel.brake_torque_nm = 3_700.0;
+        }
+        definition.anti_roll_rate_n_m_rad = 18_000.0;
+
+        for point in &mut definition.engine.torque_curve {
+            point.1 *= 1.48;
+        }
+        definition.engine.inertia_kg_m2 = 0.16;
+        definition.transmission.final_drive = 4.10;
+        definition.transmission.shift_time_s = 0.085;
+        definition.transmission.clutch_capacity_nm = 900.0;
+
+        const SOURCE: &str = "derived from engineering-reference-v1; authored differences: dry mass/inertia, drag/lift, front/rear tire fitment, spring/damper/brake, anti-roll, engine inertia/torque curve, final drive/shift/clutch; no measured vehicle or tire source";
+        let authored =
+            |ranges| ParameterProvenance::new(ParameterOrigin::Authored, SOURCE, "arcade-fun-v1", None, ranges);
+        definition.provenance.chassis_mass_properties = authored(ranges(&[
+            ("dry_mass", "kg", 800.0, 2_500.0),
+            ("cg_x", "m", -1.0, 1.0),
+            ("cg_y", "m", -1.0, 1.0),
+            ("cg_z", "m", -2.0, 2.0),
+            ("inertia_x", "kg*m^2", 100.0, 5_000.0),
+            ("inertia_y", "kg*m^2", 100.0, 8_000.0),
+            ("inertia_z", "kg*m^2", 100.0, 8_000.0),
+        ]));
+        definition.provenance.aerodynamics = authored(ranges(&[
+            ("frontal_area", "m^2", 1.0, 4.0),
+            ("drag_coefficient", "ratio", 0.1, 1.5),
+            ("lift_coefficient", "ratio", -3.0, 1.0),
+            ("reference_air_density", "kg/m^3", 0.8, 1.5),
+        ]));
+        definition.provenance.front_wheels_and_tires = authored(wheel_ranges(true));
+        definition.provenance.rear_wheels_and_tires = authored(wheel_ranges(false));
+        definition.provenance.suspension = authored(ranges(&[
+            ("spring_rate", "N/m", 5_000.0, 200_000.0),
+            ("damper_rate", "N*s/m", 500.0, 20_000.0),
+            ("rest_length", "m", 0.1, 0.6),
+            ("maximum_travel", "m", 0.03, 0.4),
+            ("bump_stop_rate", "N/m", 10_000.0, 1_000_000.0),
+            ("anti_roll_rate", "N*m/rad", 0.0, 100_000.0),
+        ]));
+        definition.provenance.brakes = authored(ranges(&[
+            ("front_brake_torque", "N*m", 0.0, 10_000.0),
+            ("rear_brake_torque", "N*m", 0.0, 10_000.0),
+        ]));
+        definition.provenance.engine = authored(ranges(&[
+            ("idle_speed", "rpm", 400.0, 2_000.0),
+            ("redline", "rpm", 3_000.0, 15_000.0),
+            ("engine_inertia", "kg*m^2", 0.05, 2.0),
+            ("torque_curve_speed", "rpm", 0.0, 20_000.0),
+            ("torque_curve_torque", "N*m", 0.0, 2_000.0),
+            ("fuel_energy", "J/kg", 10_000_000.0, 60_000_000.0),
+            ("thermal_efficiency", "ratio", 0.05, 0.65),
+        ]));
+        definition.provenance.transmission_and_clutch = authored(ranges(&[
+            ("forward_gear_ratio", "ratio", 0.1, 8.0),
+            ("reverse_gear_ratio", "ratio", -8.0, -0.1),
+            ("final_drive", "ratio", 0.5, 10.0),
+            ("shift_time", "s", 0.01, 2.0),
+            ("clutch_capacity", "N*m", 10.0, 5_000.0),
+            ("clutch_stiffness", "N*m/(rad/s)", 0.1, 100.0),
+        ]));
         definition
     }
 }

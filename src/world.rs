@@ -4,7 +4,7 @@ use crate::controls::DriverInput;
 use crate::math::{Quat, Vec3, clamp01, semi_implicit_linear_step};
 use crate::road::DynamicRoad;
 use crate::tire::{MagicFormulaTire, TireInput, transient_slip_step};
-use crate::vehicle::{Vehicle, VehicleDefinition, aerodynamic_drag_magnitude_n, evaluate_tire};
+use crate::vehicle::{Vehicle, VehicleDefinition, VehiclePreset, aerodynamic_drag_magnitude_n, evaluate_tire};
 
 /// Inner face of the barriers on the procedural v0.1 demonstration circuit.
 pub const DEMO_TRACK_HALF_WIDTH_M: f64 = 5.6;
@@ -127,16 +127,19 @@ impl PhysicsWorld {
         }
     }
     pub fn demo(vehicle_count: usize) -> Self {
+        Self::demo_with_preset(vehicle_count, VehiclePreset::RaceGameplay)
+    }
+    pub fn demo_with_preset(vehicle_count: usize, preset: VehiclePreset) -> Self {
         let mut w = Self::new(SimulationConfig::default());
         // Bound the dynamic-road cell count while covering the full-size
         // circuit and its barriers (720 m square at 4.5 m resolution).
         w.road = DynamicRoad::new(160, 160, 4.5);
         let circuit = circuit::segments();
         for n in 0..vehicle_count {
-            let mut v = Vehicle::new(VehicleDefinition::race_gameplay());
-            // The circuit demo uses a race preset. ESC remains implemented and
-            // can be enabled by applications, but is not allowed to fight rapid
-            // driver-requested direction changes by default.
+            let mut v = Vehicle::new(VehicleDefinition::from_preset(preset));
+            // Circuit demos select their physical definition explicitly. ESC
+            // remains available, but does not fight rapid driver-requested
+            // direction changes by default.
             v.driver_aids.stability_control_enabled = false;
             let row = n / 2;
             let segment = circuit[(circuit.len() + circuit.len() - row * 2) % circuit.len()];

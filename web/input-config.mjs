@@ -1,4 +1,5 @@
 export const INPUT_CONFIG_STORAGE_KEY = 'my-physics.input-config.v1';
+export const ARCADE_PROFILE_STORAGE_KEY = 'my-physics.drive-profile.arcade.v1';
 
 export const DEFAULT_INPUT_CONFIG = Object.freeze({
   driveProfile: 'sport',
@@ -31,7 +32,7 @@ export function sanitizeInputConfig(candidate = {}) {
   const maximum = finite(candidate.steeringMax, defaults.steeringMax);
   const center = finite(candidate.steeringCenter, defaults.steeringCenter);
   const validSteeringRange = minimum < center && center < maximum;
-  const driveProfile = ['accessible', 'sport', 'simulation'].includes(candidate.driveProfile)
+  const driveProfile = ['accessible', 'sport', 'simulation', 'arcade'].includes(candidate.driveProfile)
     ? candidate.driveProfile
     : candidate.keyboardAdaptive === false ? 'simulation' : 'sport';
   return {
@@ -53,6 +54,18 @@ export function sanitizeInputConfig(candidate = {}) {
     clutchPressed: finite(candidate.clutchPressed, defaults.clutchPressed),
     calibratedDevice: String(candidate.calibratedDevice || ''),
   };
+}
+
+/// Hardware calibration is shared by both demos. Only the game-facing drive
+/// profile gets its own Arcade storage key, so visiting Arcade can never
+/// overwrite the Simulation demo's selected profile.
+export function sharedInputConfigForPersistence(activeConfig, sharedDriveProfile, arcadeDemo) {
+  const active = sanitizeInputConfig(activeConfig);
+  if (!arcadeDemo) return active;
+  const preservedProfile = ['accessible', 'sport', 'simulation'].includes(sharedDriveProfile)
+    ? sharedDriveProfile
+    : DEFAULT_INPUT_CONFIG.driveProfile;
+  return { ...active, driveProfile: preservedProfile, keyboardAdaptive: preservedProfile !== 'simulation' };
 }
 
 export function inputConfigFromSources(search = '', storedJson = '') {

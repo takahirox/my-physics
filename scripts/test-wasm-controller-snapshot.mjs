@@ -9,6 +9,7 @@ const physics = instance.exports;
 // The game-facing keyboard adapter is adaptive by default. Digital Raw/Test
 // remains explicit and is immediate after its bumpless mode transition settles.
 physics.physics_reset();
+assert.equal(physics.physics_demo_vehicle_preset(), 1, 'existing URL/default remains Race Gameplay');
 assert.equal(physics.physics_keyboard_assist(), 1);
 assert.equal(physics.physics_experience_profile(), 1, 'Sport is the normal game default');
 assert.equal(physics.physics_policy_lateral_accel_target(), 10);
@@ -82,7 +83,7 @@ physics.physics_step(1);
 assert(Math.abs(physics.physics_steering(0) - beforeWheel) <= 0.004, 'wheel activation must be bumpless');
 physics.physics_step(500);
 assert.equal(physics.physics_input_stage_steering(2), 0.5, 'wheel must remain 1:1 in every profile');
-for (const profile of [0, 1, 2]) {
+for (const profile of [0, 1, 2, 3]) {
   physics.physics_reset();
   physics.physics_set_experience_profile(profile);
   physics.physics_set_device_input(3, 0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0);
@@ -115,7 +116,7 @@ function sampleGamepadPolicy(profile, targetKmh, normalizedSteering) {
 }
 
 const policySamples = [];
-for (const profile of [0, 1, 2]) {
+for (const profile of [0, 1, 2, 3]) {
   for (const targetKmh of [50, 100, 140]) {
     const quarter = sampleGamepadPolicy(profile, targetKmh, 0.25);
     const half = sampleGamepadPolicy(profile, targetKmh, 0.5);
@@ -123,7 +124,7 @@ for (const profile of [0, 1, 2]) {
     if (profile === 2) {
       assert(Math.abs(quarter.policy - 0.25) < 1e-12 && Math.abs(half.policy - 0.5) < 1e-12, 'Simulation must be raw');
     } else {
-      const targetMps2 = profile === 0 ? 7.5 : 10;
+      const targetMps2 = profile === 0 ? 7.5 : profile === 3 ? 12 : 10;
       for (const sample of [quarter, half]) {
         const speedMps = sample.actualKmh / 3.6;
         const limit = Math.max(0.02, Math.min(1, Math.atan(2.51 * targetMps2 / speedMps ** 2) / 0.54));
@@ -221,6 +222,26 @@ physics.physics_snapshot_save();
 physics.physics_set_player_autopilot(0);
 assert.equal(physics.physics_snapshot_restore(), 1);
 assert.equal(physics.physics_player_autopilot(), 1);
+
+// Demo definition selection survives reset and is browser-snapshot state.
+physics.physics_select_demo_vehicle_preset(2);
+assert.equal(physics.physics_demo_vehicle_preset(), 2);
+physics.physics_set_experience_profile(3);
+physics.physics_set_keyboard_input(0.2, 0.7, 0, 0, 0, 0);
+physics.physics_step(80);
+physics.physics_snapshot_save();
+physics.physics_step(120);
+const expectedArcade = publicState();
+physics.physics_select_demo_vehicle_preset(1);
+assert.equal(physics.physics_demo_vehicle_preset(), 1);
+assert.equal(physics.physics_snapshot_restore(), 1);
+assert.equal(physics.physics_demo_vehicle_preset(), 2, 'snapshot restores authored demo selection');
+assert.equal(physics.physics_experience_profile(), 3, 'snapshot restores external Arcade controller profile');
+physics.physics_step(120);
+assert.deepEqual(publicState(), expectedArcade, 'Arcade browser snapshot must deterministically re-simulate');
+physics.physics_reset();
+assert.equal(physics.physics_demo_vehicle_preset(), 2, 'reset preserves selected Arcade physical definition');
+physics.physics_select_demo_vehicle_preset(1);
 
 function scheduleRun(refreshHz) {
   physics.physics_reset();

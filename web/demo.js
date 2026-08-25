@@ -8,6 +8,7 @@ import {
 import {
   DEFAULT_INPUT_CONFIG,
   INPUT_CONFIG_STORAGE_KEY,
+  ARCADE_PROFILE_STORAGE_KEY,
   DeviceActivityLatch,
   captureRestCalibration,
   inputActivityMagnitude,
@@ -15,10 +16,21 @@ import {
   inputConfigForDevice,
   normalizeCenteredAxis,
   normalizePedalAxis,
+  sharedInputConfigForPersistence,
 } from './input-config.mjs';
 
 const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
+const inputParameters = new URLSearchParams(location.search);
+const ARCADE_DEMO = inputParameters.get('demo') === 'arcade';
+const DRIVE_PROFILES = ['accessible', 'sport', 'simulation', 'arcade'];
+const PROFILE_INDEX = Object.freeze({ accessible: 0, sport: 1, simulation: 2, arcade: 3 });
+if (ARCADE_DEMO) {
+  document.body.classList.add('arcade-demo');
+  document.querySelector('h1').textContent = 'Arcade Fun Circuit';
+  document.querySelector('.eyebrow').textContent = 'SAME RUST PLANT · AUTHORED ARCADE-FUN-V1 · 1000 HZ';
+  document.querySelector('.legend').textContent = 'ARCADE · WASD / arrows · Space: handbrake drift · C: camera · I: Arcade / Simulation raw · R: reset · P: AI';
+}
 const ui = Object.fromEntries(
   ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality', 'cameraPreset', 'driveProfile', 'keyboardPolicy', 'inputResponse', 'calibrationStatus'].map(
     (id) => [id, document.querySelector(`#${id}`)],
@@ -32,7 +44,6 @@ let gear = 0;
 let completedLaps = 0;
 let previousProgress;
 let cameraPreset = 'chase';
-const inputParameters = new URLSearchParams(location.search);
 let inputConfig = inputConfigFromSources(inputParameters, (() => {
   try {
     return localStorage.getItem(INPUT_CONFIG_STORAGE_KEY) || '';
@@ -40,21 +51,31 @@ let inputConfig = inputConfigFromSources(inputParameters, (() => {
     return '';
   }
 })());
+const sharedDriveProfile = inputConfig.driveProfile;
+if (ARCADE_DEMO && !inputParameters.has('driveProfile')) {
+  let arcadeProfile = 'arcade';
+  try {
+    const stored = localStorage.getItem(ARCADE_PROFILE_STORAGE_KEY);
+    if (['accessible', 'sport', 'simulation', 'arcade'].includes(stored)) arcadeProfile = stored;
+  } catch {
+    // The default remains valid without storage access.
+  }
+  inputConfig = { ...inputConfig, driveProfile: arcadeProfile, keyboardAdaptive: arcadeProfile !== 'simulation' };
+}
 
 function persistInputConfig() {
   try {
-    localStorage.setItem(INPUT_CONFIG_STORAGE_KEY, JSON.stringify(inputConfig));
+    const shared = sharedInputConfigForPersistence(inputConfig, sharedDriveProfile, ARCADE_DEMO);
+    localStorage.setItem(INPUT_CONFIG_STORAGE_KEY, JSON.stringify(shared));
+    if (ARCADE_DEMO) localStorage.setItem(ARCADE_PROFILE_STORAGE_KEY, inputConfig.driveProfile);
   } catch {
     // Sandboxed/private browsers may deny persistence; the active config
     // remains valid for this session and URL parameters still work.
   }
 }
 
-const DRIVE_PROFILES = ['accessible', 'sport', 'simulation'];
-const PROFILE_INDEX = Object.freeze({ accessible: 0, sport: 1, simulation: 2 });
-
 function setDriveProfile(requested, persist = true) {
-  const driveProfile = DRIVE_PROFILES.includes(requested) ? requested : 'sport';
+  const driveProfile = DRIVE_PROFILES.includes(requested) ? requested : (ARCADE_DEMO ? 'arcade' : 'sport');
   const keyboardAdaptive = driveProfile !== 'simulation';
   inputConfig = { ...inputConfig, driveProfile, keyboardAdaptive };
   if (ui.driveProfile) ui.driveProfile.value = driveProfile;
@@ -64,7 +85,7 @@ function setDriveProfile(requested, persist = true) {
 }
 
 function setKeyboardAdaptive(enabled, persist = true) {
-  setDriveProfile(enabled ? (inputConfig.driveProfile === 'accessible' ? 'accessible' : 'sport') : 'simulation', persist);
+  setDriveProfile(enabled ? (inputConfig.driveProfile === 'accessible' ? 'accessible' : ARCADE_DEMO ? 'arcade' : 'sport') : 'simulation', persist);
 }
 
 function selectCameraPreset(name) {
@@ -90,7 +111,7 @@ addEventListener('keydown', (event) => {
     api.physics_set_player_esc(api.physics_player_esc() ? 0 : 1);
   }
   if (event.code === 'KeyI' && api && !event.repeat) {
-    setDriveProfile(inputConfig.driveProfile === 'simulation' ? 'sport' : 'simulation');
+    setDriveProfile(inputConfig.driveProfile === 'simulation' ? (ARCADE_DEMO ? 'arcade' : 'sport') : 'simulation');
   }
   if (event.code === 'KeyC' && !event.repeat) {
     const current = CAMERA_PRESET_ORDER.indexOf(cameraPreset);
@@ -802,6 +823,8 @@ function frame(now) {
     experienceProfile: DRIVE_PROFILES[api.physics_experience_profile()] || 'sport',
     lateralAccelTargetMps2: api.physics_policy_lateral_accel_target(),
     gamepadAssist: api.physics_gamepad_assist() !== 0,
+    demoVehiclePreset: api.physics_demo_vehicle_preset() === 2 ? 'arcade_fun' : 'race_gameplay',
+    vehicleDefinitionRevision: api.physics_demo_vehicle_preset() === 2 ? 'arcade-fun-v1' : 'race-gameplay-v1',
     steer: input.steer,
     throttle: input.throttle,
     brake: input.brake,
@@ -827,6 +850,7 @@ try {
   if (!response.ok) throw new Error(`HTTP ${response.status}: run scripts/build-wasm.sh first`);
   const result = await WebAssembly.instantiateStreaming(response, {});
   api = result.instance.exports;
+  api.physics_select_demo_vehicle_preset(ARCADE_DEMO ? 2 : 1);
   document.querySelector('#saveSnapshot').addEventListener('click', () => {
     const bytes = api.physics_snapshot_save();
     ui.snapshotStatus.textContent = `SAVED · ${(bytes / 1024).toFixed(0)} KiB`;
@@ -872,7 +896,9 @@ try {
   benchmarkPhysics();
   setDriveProfile(inputConfig.driveProfile, false);
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
-  status.textContent = '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
+  status.textContent = ARCADE_DEMO
+    ? 'ARCADE FUN ONLINE · SAME WASM PLANT · AUTHORED PARAMETERS'
+    : '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
   status.classList.add('ready');
   requestAnimationFrame(frame);
 } catch (error) {

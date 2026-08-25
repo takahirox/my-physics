@@ -8,6 +8,7 @@ import {
   inputConfigForDevice,
   normalizeCenteredAxis,
   normalizePedalAxis,
+  sharedInputConfigForPersistence,
 } from '../web/input-config.mjs';
 
 test('URL values override persisted calibration and remain bounded', () => {
@@ -26,6 +27,16 @@ test('URL values override persisted calibration and remain bounded', () => {
   assert.equal(config.steeringCenter, 0.02);
   assert.equal(config.calibratedDevice, '', 'explicit URL calibration is portable rather than tied to stored device id');
   assert.equal(inputConfigFromSources('?inputDeadzone=99').gamepadDeadzone, 0.35);
+});
+
+test('arcade profile storage can share hardware calibration without poisoning simulation profile', () => {
+  const arcade = inputConfigFromSources('?driveProfile=arcade&steerCenter=.025&brakeReleased=.88');
+  const shared = sharedInputConfigForPersistence(arcade, 'simulation', true);
+  assert.equal(shared.driveProfile, 'simulation');
+  assert.equal(shared.keyboardAdaptive, false);
+  assert.equal(shared.steeringCenter, 0.025);
+  assert.equal(shared.brakeReleased, 0.88);
+  assert.equal(sharedInputConfigForPersistence(arcade, 'simulation', false).driveProfile, 'arcade');
 });
 
 test('drive profile persists, accepts URL override, and migrates legacy raw mode', () => {

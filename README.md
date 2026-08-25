@@ -23,7 +23,7 @@ My Physics is a deterministic, headless-first vehicle and motorsport physics eng
 - Complete versioned/checksummed snapshot archives, persistent timed input history, restore and deterministic re-simulation
 - Detailed telemetry, expanded headless CSV, continuous Audio/FFB frames and discrete physical events
 - Raw WebAssembly API and rendering-independent WebGL2 3D demo with metric-spaced track detail plus switchable close chase and hood cameras
-- Explicit engineering-reference and race-gameplay vehicle-data presets with parameter-group provenance and validity metadata
+- Explicit engineering-reference, race-gameplay and arcade-fun vehicle-data presets with parameter-group provenance and validity metadata
 
 ## Run it
 
@@ -35,7 +35,7 @@ cargo test --all-targets
 ./scripts/serve-web.sh
 ```
 
-Open <http://localhost:8080>. Drive a complete lap with WASD or arrow keys. Sport is the normal game profile; Accessible lowers the steering lateral-acceleration target and enables ESC, while Simulation exposes normalized raw gamepad and Digital Raw/Test keyboard commands. Select a profile in the UI or use `?driveProfile=accessible|sport|simulation`; I switches between Sport and Simulation. Keyboard and gamepad profile policy is stepped at 1,000 Hz and changes mode/device without a rack jump. It never changes physical rack travel, tires, mass or timestep. Press C (or use the Camera selector) to alternate close chase and hood presets; `?camera=hood` selects the near view on load. Camera state is visual-only and is not stored in a physics snapshot. Press P to toggle the AI driver (or `?autopilot=1`) and E to override ESC. Gamepads use configurable deadzone/outer-deadzone/expo before the selected policy, while calibrated wheels remain linear 1:1 with no speed assist in every profile. Use Shift for the clutch, Space for the handbrake, T for automatic mode, R to reset, 1–6 to request a gear, and K/L to save/restore a snapshot.
+Open <http://localhost:8080> for the unchanged Race/Simulation demo, or <http://localhost:8080/?demo=arcade> for Arcade Fun. Both use the same Rust/WASM plant; Arcade selects an authored `VehicleDefinition` and a separate 1.22 g controller policy. Sport is the normal profile on the existing URL; Accessible lowers the target and enables ESC, while Simulation exposes normalized raw gamepad and Digital Raw/Test keyboard commands. Arcade has its own stored profile, but shares wheel/pedal calibration with Simulation. Select a profile in the UI or use `?driveProfile=accessible|sport|simulation|arcade`; I switches between the current demo's assisted profile and Simulation. Keyboard and gamepad policy is stepped at 1,000 Hz and never changes physical rack travel, tires, mass or timestep. Calibrated wheels remain linear 1:1 with no speed assist in every profile. Use WASD/arrows to drive, Space for the handbrake, C for camera, P for AI, E for ESC, Shift for clutch, T for automatic, R to reset, 1–6 for gears, and K/L for snapshots.
 
 The Device Setup button captures only the current steering center and released pedal positions for the matching controller id. Full endpoints and axis mapping can be authored through URL parameters, for example `?steerAxis=0&throttleAxis=1&brakeAxis=2&clutchAxis=3&steerMin=-1&steerMax=1&inputDeadzone=.08&inputOuterDeadzone=.04&inputExpo=1.55`. UI choices and captured rest calibration persist locally; URL values take precedence. An idle connected controller cannot steal input from the active device.
 

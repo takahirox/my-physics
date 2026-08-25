@@ -10,7 +10,7 @@
 <body>
   <main>
     <header>
-      <div><span class="eyebrow">WEBGL2 · WASM · 1000 HZ · 10 VEHICLES</span><h1>Vehicle Dynamics Lab</h1></div>
+      <div><span class="eyebrow">WEBGL2 · WASM · 1000 HZ · 10 VEHICLES</span><h1>Vehicle Dynamics Lab</h1><nav><a href="./">SIMULATION DEMO</a><a href="./?demo=arcade">ARCADE FUN DEMO</a></nav></div>
       <div id="status" class="status">Loading physics.wasm…</div>
     </header>
     <section class="layout">
@@ -27,7 +27,7 @@
           <div class="metric"><label>FFB TORQUE</label><strong id="ffb">0.0 Nm</strong></div>
         </div>
         <div class="device"><label>INPUT</label><span id="inputDevice">KEYBOARD</span></div>
-        <div class="device"><label>DRIVE PROFILE</label><select id="driveProfile"><option value="accessible">ACCESSIBLE · 0.76G + ESC</option><option value="sport" selected>SPORT · 1.02G</option><option value="simulation">SIMULATION · RAW</option></select></div>
+        <div class="device"><label>CONTROLLER PROFILE</label><select id="driveProfile"><option value="accessible">ACCESSIBLE · 0.76G + ESC</option><option value="sport" selected>SPORT · 1.02G</option><option value="simulation">SIMULATION · RAW</option><option value="arcade">ARCADE · 1.22G</option></select></div>
         <div class="device"><label>KEYBOARD POLICY</label><select id="keyboardPolicy"><option value="adaptive">PROFILE ADAPTIVE</option><option value="raw">SIMULATION DIGITAL RAW / TEST</option></select></div>
         <div class="device"><label>PAD CURVE</label><select id="inputResponse"><option value="balanced">BALANCED EXPO</option><option value="direct">DIRECT LINEAR</option></select></div>
         <div class="device setup"><label>DEVICE SETUP</label><span><button id="calibrateRest">REST / CENTER</button><button id="resetCalibration">RESET</button></span></div>
@@ -38,7 +38,7 @@
         <h2>Tire state</h2>
         <div id="tires" class="tires"></div>
         <div class="bars"><label>BODY DAMAGE <span id="damageText">0%</span></label><div><i id="damage"></i></div></div>
-        <p class="note">Rendering is a separate clock. The Rust core advances in fixed 1 ms steps and has no dependency on this canvas.</p>
+        <p class="note">Rendering is a separate clock. The Rust core advances in fixed 1 ms steps and has no dependency on this canvas. Arcade changes authored vehicle parameters and an external controller profile—not the physical equations. <a href="./">Simulation</a> · <a href="./?demo=arcade">Arcade Fun</a>.</p>
       </aside>
     </section>
   </main>

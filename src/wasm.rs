@@ -3,7 +3,7 @@
 //! default unsafe-code lint; no unsafe block or pointer access is used.
 #![allow(unsafe_code)]
 
-use crate::{DriverInput, Fidelity, KeyboardSteeringAssist, PhysicsWorld, Quat, Snapshot};
+use crate::{DriverInput, Fidelity, KeyboardSteeringAssist, PhysicsWorld, Quat, Snapshot, VehiclePreset};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -13,13 +13,16 @@ static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
 static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
 static KEYBOARD_ASSIST_ENABLED: AtomicBool = AtomicBool::new(true);
 static EXPERIENCE_PROFILE: AtomicU8 = AtomicU8::new(1);
+static DEMO_VEHICLE_PRESET: AtomicU8 = AtomicU8::new(1);
 static KEYBOARD: OnceLock<Mutex<KeyboardInputState>> = OnceLock::new();
 
 const PROFILE_ACCESSIBLE: u8 = 0;
 const PROFILE_SPORT: u8 = 1;
 const PROFILE_SIMULATION: u8 = 2;
+const PROFILE_ARCADE: u8 = 3;
 const ACCESSIBLE_LATERAL_ACCEL_MPS2: f64 = 7.5;
 const SPORT_LATERAL_ACCEL_MPS2: f64 = 10.0;
+const ARCADE_LATERAL_ACCEL_MPS2: f64 = 12.0;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct InputPipelineState {
@@ -47,13 +50,21 @@ struct SavedBrowserState {
     player_autopilot: bool,
     keyboard_assist_enabled: bool,
     experience_profile: u8,
+    demo_vehicle_preset: u8,
 }
 
 fn keyboard() -> &'static Mutex<KeyboardInputState> {
     KEYBOARD.get_or_init(|| Mutex::new(KeyboardInputState::default()))
 }
 fn demo() -> &'static Mutex<PhysicsWorld> {
-    DEMO.get_or_init(|| Mutex::new(PhysicsWorld::demo(10)))
+    DEMO.get_or_init(|| Mutex::new(selected_demo()))
+}
+fn selected_demo() -> PhysicsWorld {
+    let preset = match DEMO_VEHICLE_PRESET.load(Ordering::Relaxed) {
+        2 => VehiclePreset::ArcadeFun,
+        _ => VehiclePreset::RaceGameplay,
+    };
+    PhysicsWorld::demo_with_preset(10, preset)
 }
 fn with_world<R>(f: impl FnOnce(&mut PhysicsWorld) -> R) -> R {
     let mut guard = demo().lock().unwrap_or_else(|e| e.into_inner());
@@ -73,13 +84,14 @@ fn profile_lateral_accel_target(profile: u8) -> Option<f64> {
     match profile {
         PROFILE_ACCESSIBLE => Some(ACCESSIBLE_LATERAL_ACCEL_MPS2),
         PROFILE_SPORT => Some(SPORT_LATERAL_ACCEL_MPS2),
+        PROFILE_ARCADE => Some(ARCADE_LATERAL_ACCEL_MPS2),
         _ => None,
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_reset() {
-    with_world(|w| *w = PhysicsWorld::demo(10));
+    with_world(|w| *w = selected_demo());
     PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
     PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
     KEYBOARD_ASSIST_ENABLED.store(true, Ordering::Relaxed);
@@ -87,6 +99,20 @@ pub extern "C" fn physics_reset() {
     let mut state = KeyboardInputState::default();
     state.pipeline.device_kind = 1;
     *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = state;
+}
+
+/// Selects the authored physical definition used by subsequent resets and
+/// immediately starts that demo. 1 = Race Gameplay, 2 = Arcade Fun.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_select_demo_vehicle_preset(preset: u32) {
+    let preset = if preset == 2 { 2 } else { 1 };
+    DEMO_VEHICLE_PRESET.store(preset, Ordering::Relaxed);
+    physics_reset();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_demo_vehicle_preset() -> u32 {
+    u32::from(DEMO_VEHICLE_PRESET.load(Ordering::Relaxed))
 }
 
 fn set_analog_input(device_kind: u8, raw: DriverInput, normalized: DriverInput) {
@@ -295,7 +321,7 @@ pub extern "C" fn physics_set_player_esc(enabled: u32) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_set_experience_profile(profile: u32) {
-    let profile = (profile as u8).clamp(PROFILE_ACCESSIBLE, PROFILE_SIMULATION);
+    let profile = (profile as u8).clamp(PROFILE_ACCESSIBLE, PROFILE_ARCADE);
     let changed = EXPERIENCE_PROFILE.swap(profile, Ordering::Relaxed) != profile;
     KEYBOARD_ASSIST_ENABLED.store(profile != PROFILE_SIMULATION, Ordering::Relaxed);
     let input_mode = PLAYER_INPUT_MODE.load(Ordering::Relaxed);
@@ -553,6 +579,7 @@ pub extern "C" fn physics_snapshot_save() -> u32 {
         player_autopilot: PLAYER_AUTOPILOT.load(Ordering::Relaxed),
         keyboard_assist_enabled: KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed),
         experience_profile: EXPERIENCE_PROFILE.load(Ordering::Relaxed),
+        demo_vehicle_preset: DEMO_VEHICLE_PRESET.load(Ordering::Relaxed),
     });
     let size = state.world.to_bytes().len();
     let mut saved = saved_snapshot().lock().unwrap_or_else(|error| error.into_inner());
@@ -572,6 +599,7 @@ pub extern "C" fn physics_snapshot_restore() -> u32 {
         PLAYER_AUTOPILOT.store(state.player_autopilot, Ordering::Relaxed);
         KEYBOARD_ASSIST_ENABLED.store(state.keyboard_assist_enabled, Ordering::Relaxed);
         EXPERIENCE_PROFILE.store(state.experience_profile, Ordering::Relaxed);
+        DEMO_VEHICLE_PRESET.store(state.demo_vehicle_preset, Ordering::Relaxed);
     });
     1
 }
