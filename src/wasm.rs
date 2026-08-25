@@ -11,6 +11,7 @@ static DEMO: OnceLock<Mutex<PhysicsWorld>> = OnceLock::new();
 static SAVED_SNAPSHOT: OnceLock<Mutex<Option<SavedBrowserState>>> = OnceLock::new();
 static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
 static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
+static KEYBOARD_ASSIST_ENABLED: AtomicBool = AtomicBool::new(false);
 static KEYBOARD: OnceLock<Mutex<KeyboardInputState>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -25,6 +26,7 @@ struct SavedBrowserState {
     keyboard: KeyboardInputState,
     player_input_mode: u8,
     player_autopilot: bool,
+    keyboard_assist_enabled: bool,
 }
 
 fn keyboard() -> &'static Mutex<KeyboardInputState> {
@@ -52,6 +54,7 @@ pub extern "C" fn physics_reset() {
     with_world(|w| *w = PhysicsWorld::demo(10));
     PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
     PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
+    KEYBOARD_ASSIST_ENABLED.store(false, Ordering::Relaxed);
     *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = KeyboardInputState::default();
 }
 #[unsafe(no_mangle)]
@@ -84,7 +87,11 @@ pub extern "C" fn physics_step(steps: u32) {
                 let speed = w.vehicles.first().map_or(0.0, |vehicle| vehicle.telemetry.speed_mps);
                 let mut keyboard = keyboard().lock().unwrap_or_else(|error| error.into_inner());
                 let command = keyboard.command;
-                let steering = keyboard.assist.update(command.steering, speed, w.config.fixed_dt_s);
+                let steering = if KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed) {
+                    keyboard.assist.update(command.steering, speed, w.config.fixed_dt_s)
+                } else {
+                    command.steering
+                };
                 let _ = w.set_input_unrecorded(0, DriverInput { steering, ..command });
             }
             let ai_start = if PLAYER_AUTOPILOT.load(Ordering::Relaxed) { 0 } else { 1 };
@@ -156,6 +163,17 @@ pub extern "C" fn physics_set_player_esc(enabled: u32) {
             vehicle.driver_aids.stability_control_enabled = enabled != 0;
         }
     });
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_set_keyboard_assist(enabled: u32) {
+    let enabled = enabled != 0;
+    if KEYBOARD_ASSIST_ENABLED.swap(enabled, Ordering::Relaxed) != enabled {
+        keyboard().lock().unwrap_or_else(|error| error.into_inner()).assist.reset();
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_keyboard_assist() -> u32 {
+    u32::from(KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed))
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_player_esc() -> u32 {
@@ -265,6 +283,7 @@ pub extern "C" fn physics_snapshot_save() -> u32 {
         keyboard: *keyboard().lock().unwrap_or_else(|error| error.into_inner()),
         player_input_mode: PLAYER_INPUT_MODE.load(Ordering::Relaxed),
         player_autopilot: PLAYER_AUTOPILOT.load(Ordering::Relaxed),
+        keyboard_assist_enabled: KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed),
     });
     let size = state.world.to_bytes().len();
     let mut saved = saved_snapshot().lock().unwrap_or_else(|error| error.into_inner());
@@ -282,6 +301,7 @@ pub extern "C" fn physics_snapshot_restore() -> u32 {
         *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = state.keyboard;
         PLAYER_INPUT_MODE.store(state.player_input_mode, Ordering::Relaxed);
         PLAYER_AUTOPILOT.store(state.player_autopilot, Ordering::Relaxed);
+        KEYBOARD_ASSIST_ENABLED.store(state.keyboard_assist_enabled, Ordering::Relaxed);
     });
     1
 }

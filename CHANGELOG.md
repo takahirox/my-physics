@@ -15,5 +15,6 @@
 - Replaced the straight demo with a 0.72 km closed F1-style circuit shared by Rust collisions, vehicle grids, AI controllers and WebGL rendering; added lap progress, a P-key AI-driver toggle and a deterministic clean-lap validation example.
 - Rescaled the compact prototype into a 2.06 km/240-segment circuit with a tested 26.4 m minimum radius and a 136 km/h damage-free reference lap; the same geometry still drives WebGL, barriers, AI and lap progress.
 - Added physics-clock, speed-sensitive keyboard steering with controlled slew while preserving raw gamepad/wheel axes; the browser race preset starts with ESC off and exposes an E-key toggle.
+- Made simulator-strict raw keyboard steering the browser default; A/D now requests the full physical rack angle immediately, while the speed-sensitive assist is an explicit I-key opt-in mode.
 
 The source implementation is complete for the documented v0.1 acceptance matrix. A public release tag and open-source license grant remain pending the owner’s explicitly deferred license decision.

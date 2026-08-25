@@ -28,6 +28,9 @@ addEventListener('keydown', (event) => {
   if (event.code === 'KeyE' && api && !event.repeat) {
     api.physics_set_player_esc(api.physics_player_esc() ? 0 : 1);
   }
+  if (event.code === 'KeyI' && api && !event.repeat) {
+    api.physics_set_keyboard_assist(api.physics_keyboard_assist() ? 0 : 1);
+  }
   if (event.code === 'KeyK' && api) {
     const bytes = api.physics_snapshot_save();
     ui.snapshotStatus.textContent = `SAVED · ${(bytes / 1024).toFixed(0)} KiB`;
@@ -481,9 +484,13 @@ function frame(now) {
     clutch: input.clutch,
     handbrake: input.handbrake,
     device: input.device,
+    keyboardAssist: api.physics_keyboard_assist() !== 0,
   };
   const escStatus = api.physics_player_esc() ? 'ESC ON' : 'ESC OFF';
-  ui.inputDevice.textContent = api.physics_player_autopilot() ? `AI DRIVER · P · ${escStatus}` : `${input.device} · ${escStatus} · E`;
+  const steeringMode = api.physics_keyboard_assist() ? 'STEER ASSIST' : 'STEER RAW';
+  ui.inputDevice.textContent = api.physics_player_autopilot()
+    ? `AI DRIVER · P · ${escStatus}`
+    : `${input.device} · ${steeringMode} · I · ${escStatus} · E`;
   if (input.keyboardSteering) {
     api.physics_set_keyboard_input(input.keyboardSteer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
   } else {
@@ -518,6 +525,7 @@ try {
     api.physics_set_quality(level);
   });
   benchmarkPhysics();
+  if (new URLSearchParams(location.search).get('keyboardAssist') === '1') api.physics_set_keyboard_assist(1);
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
   status.textContent = '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
   status.classList.add('ready');

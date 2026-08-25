@@ -6,6 +6,17 @@ const binary = await readFile(new URL('web/physics.wasm', repository));
 const { instance } = await WebAssembly.instantiate(binary, {});
 const physics = instance.exports;
 
+// Simulator-strict keyboard mode is the default: one physics step receives
+// the full physical rack request. The optional assist remains explicitly opt-in.
+physics.physics_reset();
+assert.equal(physics.physics_keyboard_assist(), 0);
+physics.physics_set_keyboard_input(1, 0, 0, 0, 0, 0);
+physics.physics_step(1);
+assert.equal(physics.physics_steering(0), 1);
+physics.physics_set_keyboard_assist(1);
+physics.physics_step(1);
+assert(physics.physics_steering(0) > 0 && physics.physics_steering(0) < 0.01);
+
 function publicState() {
   const values = [physics.physics_time(), physics.physics_player_autopilot(), physics.physics_player_esc()];
   for (let vehicle = 0; vehicle < physics.physics_vehicle_count(); vehicle += 1) {
@@ -28,6 +39,7 @@ function publicState() {
 }
 
 physics.physics_reset();
+physics.physics_set_keyboard_assist(1);
 physics.physics_set_keyboard_input(1, 0.65, 0, 0, 0, 0);
 physics.physics_step(73);
 const savedBytes = physics.physics_snapshot_save();
@@ -40,10 +52,12 @@ const expected = publicState();
 physics.physics_set_keyboard_input(-1, 0, 0.4, 0, 0, 0);
 physics.physics_set_input(-0.75, 0, 0, 0, 0, 0);
 physics.physics_set_player_autopilot(1);
+physics.physics_set_keyboard_assist(0);
 physics.physics_step(31);
 
 assert.equal(physics.physics_snapshot_restore(), 1);
 assert.equal(physics.physics_player_autopilot(), 0);
+assert.equal(physics.physics_keyboard_assist(), 1);
 physics.physics_step(480);
 assert.deepEqual(publicState(), expected, 'restored keyboard branch must reproduce every public physical value');
 
