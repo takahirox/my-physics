@@ -129,6 +129,18 @@ impl PhysicsWorld {
     pub fn demo(vehicle_count: usize) -> Self {
         Self::demo_with_preset(vehicle_count, VehiclePreset::RaceGameplay)
     }
+    /// Single-vehicle, collision-free proving ground used by browser and
+    /// native engineering tools. Physical models are unchanged; only the
+    /// application-level world composition and LOD policy differ.
+    pub fn engineering_lab() -> Self {
+        let mut world = Self::new(SimulationConfig { automatic_lod: false, ..SimulationConfig::default() });
+        let mut vehicle = Vehicle::new(VehicleDefinition::engineering_reference());
+        vehicle.driver_aids.stability_control_enabled = false;
+        vehicle.target_fidelity = 1.0;
+        vehicle.fidelity = 1.0;
+        world.vehicles.push(vehicle);
+        world
+    }
     pub fn demo_with_preset(vehicle_count: usize, preset: VehiclePreset) -> Self {
         let mut w = Self::new(SimulationConfig::default());
         // Bound the dynamic-road cell count while covering the full-size

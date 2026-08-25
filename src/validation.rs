@@ -399,6 +399,47 @@ pub fn run_scenario_with_dt(definition: &ScenarioDefinition, fixed_dt_s: f64) ->
     }
 }
 
+/// Restores a snapshot taken exactly halfway through a catalog maneuver and
+/// replays the remaining timed input program. This is a state-level check of
+/// snapshot/restore equivalence, distinct from merely running a test twice.
+pub fn verify_midpoint_snapshot_replay(definition: &ScenarioDefinition) -> bool {
+    let fixed_dt_s = SimulationConfig::default().fixed_dt_s;
+    let mut vehicle_definition = VehicleDefinition::engineering_reference();
+    let is_acceleration = matches!(definition.input, InputProgram::FullThrottle);
+    if !is_acceleration {
+        vehicle_definition.transmission.automatic = false;
+    }
+    let mut world =
+        PhysicsWorld::new(SimulationConfig { fixed_dt_s, automatic_lod: false, ..SimulationConfig::default() });
+    world.add_vehicle(vehicle_definition);
+    world.vehicles[0].driver_aids.traction_control_enabled = is_acceleration;
+    world.vehicles[0].driver_aids.stability_control_enabled = false;
+    world.step_fixed((2.0 / fixed_dt_s).round() as u32).expect("settling fixture stays finite");
+    prepare_speed(&mut world, definition.initial_speed_mps, is_acceleration);
+    let steps = (definition.duration_s / fixed_dt_s).round() as u32;
+    let midpoint = steps / 2;
+    let max_steer = world.vehicles[0].definition.wheels[0].max_steer_rad;
+    for step in 0..midpoint {
+        let time_s = f64::from(step) * fixed_dt_s;
+        world.set_input_unrecorded(0, input_at(definition.input, time_s, max_steer)).expect("fixture vehicle exists");
+        world.step_fixed(1).expect("validation scenario stays finite");
+    }
+    let snapshot = world.snapshot();
+    for step in midpoint..steps {
+        let time_s = f64::from(step) * fixed_dt_s;
+        world.set_input_unrecorded(0, input_at(definition.input, time_s, max_steer)).expect("fixture vehicle exists");
+        world.step_fixed(1).expect("validation scenario stays finite");
+    }
+    let expected = world.state_fingerprint();
+    world.restore(&snapshot);
+    for step in midpoint..steps {
+        let time_s = f64::from(step) * fixed_dt_s;
+        world.set_input_unrecorded(0, input_at(definition.input, time_s, max_steer)).expect("fixture vehicle exists");
+        world.step_fixed(1).expect("validation scenario stays finite");
+    }
+    expected == world.state_fingerprint()
+}
+
 fn prepare_speed(world: &mut PhysicsWorld, speed_mps: f64, acceleration_run: bool) {
     let vehicle = &mut world.vehicles[0];
     vehicle.state.position_m = Vec3::new(0.0, 0.55, 0.0);

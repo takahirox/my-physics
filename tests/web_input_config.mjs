@@ -39,6 +39,23 @@ test('arcade profile storage can share hardware calibration without poisoning si
   assert.equal(sharedInputConfigForPersistence(arcade, 'simulation', false).driveProfile, 'arcade');
 });
 
+test('specialized demo URL overrides preserve the profile from raw shared storage', () => {
+  const stored = JSON.stringify({ driveProfile: 'simulation', steeringCenter: 0.02 });
+  const sharedProfile = inputConfigFromSources('', stored).driveProfile;
+  const arcadeUrl = inputConfigFromSources('?demo=arcade&driveProfile=arcade', stored);
+  const labOverride = { ...inputConfigFromSources('?demo=simulation-lab', stored), driveProfile: 'simulation' };
+  assert.equal(sharedInputConfigForPersistence(arcadeUrl, sharedProfile, true).driveProfile, 'simulation');
+  assert.equal(sharedInputConfigForPersistence(labOverride, sharedProfile, true).driveProfile, 'simulation');
+
+  const sportStored = JSON.stringify({ driveProfile: 'sport' });
+  const sportProfile = inputConfigFromSources('', sportStored).driveProfile;
+  assert.equal(
+    sharedInputConfigForPersistence({ ...inputConfigFromSources('', sportStored), driveProfile: 'simulation' }, sportProfile, true).driveProfile,
+    'sport',
+    'opening Simulation Lab must not overwrite the circuit profile',
+  );
+});
+
 test('drive profile persists, accepts URL override, and migrates legacy raw mode', () => {
   assert.equal(inputConfigFromSources('').driveProfile, 'sport');
   assert.equal(inputConfigFromSources('', JSON.stringify({ driveProfile: 'accessible' })).driveProfile, 'accessible');

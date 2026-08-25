@@ -21,4 +21,5 @@ jobs:
       - run: cargo build --release --target wasm32-unknown-unknown --lib
       - run: cp target/wasm32-unknown-unknown/release/my_physics.wasm web/physics.wasm
       - run: node scripts/test-wasm-controller-snapshot.mjs
+      - run: node scripts/test-wasm-simulation-lab.mjs
       - run: node scripts/benchmark-wasm.mjs

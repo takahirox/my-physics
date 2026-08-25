@@ -10,7 +10,7 @@
 <body>
   <main>
     <header>
-      <div><span class="eyebrow">WEBGL2 · WASM · 1000 HZ · 10 VEHICLES</span><h1>Vehicle Dynamics Lab</h1><nav><a href="./">SIMULATION DEMO</a><a href="./?demo=arcade">ARCADE FUN DEMO</a></nav></div>
+      <div><span class="eyebrow">WEBGL2 · WASM · 1000 HZ · 10 VEHICLES</span><h1>Vehicle Dynamics Lab</h1><nav><a href="./">CIRCUIT</a><a href="./?demo=arcade">ARCADE FUN</a><a href="./?demo=simulation-lab">SIMULATION LAB</a></nav></div>
       <div id="status" class="status">Loading physics.wasm…</div>
     </header>
     <section class="layout">
@@ -35,10 +35,29 @@
         <div class="device"><label>QUALITY</label><select id="quality"><option value="auto">AUTO (BENCHMARK)</option><option value="2">HIGH</option><option value="1">MEDIUM</option><option value="0">LOW</option></select></div>
         <div class="device"><label>CAMERA</label><select id="cameraPreset"><option value="chase">CHASE · C</option><option value="hood">HOOD · C</option></select></div>
         <div class="snapshot"><button id="saveSnapshot">SAVE SNAPSHOT · K</button><button id="restoreSnapshot">RESTORE · L</button><span id="snapshotStatus">NOT SAVED</span></div>
+        <section id="labPanel" class="lab-panel" hidden>
+          <h2>Reproducible maneuvers</h2>
+          <p class="lab-disclaimer">Physical-plausibility/regression evidence only. Parameters are authored/estimated—not a measured fit, measured correlation, or certification.</p>
+          <label class="lab-select">SCENARIO<select id="labScenario">
+            <option value="2">100→0 km/h · ABS brake</option>
+            <option value="4">1° step steer · 90 km/h</option>
+            <option value="5">0.5 Hz slalom · 65 km/h</option>
+            <option value="0">Coast-down · 100 km/h</option>
+            <option value="1">0→100 km/h</option>
+            <option value="3">0.5° steady steer · 72 km/h</option>
+          </select></label>
+          <div class="lab-actions"><button id="labRun">RUN VALIDATION</button><button id="labRunAll">RUN ALL FAST</button><button id="labRepeat">REPEATABILITY VERIFY</button><button id="labReplay">MIDPOINT SNAPSHOT REPLAY</button><button id="labPause">PAUSE LIVE DISPLAY</button><button id="labFreeDrive">RESET FREE DRIVE</button></div>
+          <div id="labResult" class="lab-result">SELECT A MANEUVER</div>
+          <label class="lab-select">GRAPH SIGNAL<select id="labGraphSignal"><option value="motion">speed · yaw rate · body sideslip</option><option value="slip">four-wheel longitudinal slip</option><option value="slipAngle">four-wheel slip angle</option><option value="load">four-wheel normal load</option></select></label>
+          <canvas id="labGraph" width="520" height="220" aria-label="Validation time-series graph"></canvas>
+          <div id="labChecks" class="lab-checks"></div>
+          <div class="lab-live"><span>YAW RATE <b id="labYaw">0.000 rad/s</b></span><span>SIDESLIP <b id="labSlip">0.00°</b></span><span>LATERAL A <b id="labAy">0.00 m/s²</b></span><span>ROAD WATER <b id="labWater">0.00 mm</b></span></div>
+          <p class="lab-method">Official catalog: EngineeringReference / vehicle-definition-v0.1 / engineering-reference-v1, fixed dt 0.001 s, automatic LOD off, ABS enabled, ESC disabled. Acceleration alone enables TC. Bounds and scenario programs come directly from the Rust validation catalog. Parameters are authored/estimated: this is not a measured fit, measured correlation, or certification. Wet comparison is deferred to Lab v2.</p>
+        </section>
         <h2>Tire state</h2>
         <div id="tires" class="tires"></div>
         <div class="bars"><label>BODY DAMAGE <span id="damageText">0%</span></label><div><i id="damage"></i></div></div>
-        <p class="note">Rendering is a separate clock. The Rust core advances in fixed 1 ms steps and has no dependency on this canvas. Arcade changes authored vehicle parameters and an external controller profile—not the physical equations. <a href="./">Simulation</a> · <a href="./?demo=arcade">Arcade Fun</a>.</p>
+        <p class="note">Rendering is a separate clock. The Rust core advances in fixed 1 ms steps and has no dependency on this canvas. Arcade changes authored vehicle parameters and an external controller profile—not the physical equations. <a href="./">Circuit</a> · <a href="./?demo=arcade">Arcade Fun</a> · <a href="./?demo=simulation-lab">Simulation Lab</a>.</p>
       </aside>
     </section>
   </main>

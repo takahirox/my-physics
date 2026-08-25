@@ -23,6 +23,7 @@ const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
 const inputParameters = new URLSearchParams(location.search);
 const ARCADE_DEMO = inputParameters.get('demo') === 'arcade';
+const SIMULATION_LAB = inputParameters.get('demo') === 'simulation-lab';
 const DRIVE_PROFILES = ['accessible', 'sport', 'simulation', 'arcade'];
 const PROFILE_INDEX = Object.freeze({ accessible: 0, sport: 1, simulation: 2, arcade: 3 });
 if (ARCADE_DEMO) {
@@ -30,6 +31,18 @@ if (ARCADE_DEMO) {
   document.querySelector('h1').textContent = 'Arcade Fun Circuit';
   document.querySelector('.eyebrow').textContent = 'SAME RUST PLANT · AUTHORED ARCADE-FUN-V1 · 1000 HZ';
   document.querySelector('.legend').textContent = 'ARCADE · WASD / arrows · Space: handbrake drift · C: camera · I: Arcade / Simulation raw · R: reset · P: AI';
+}
+if (SIMULATION_LAB) {
+  document.body.classList.add('simulation-lab');
+  document.querySelector('h1').textContent = 'Simulation Validation Lab';
+  document.querySelector('.eyebrow').textContent = 'ENGINEERING REFERENCE · FIXED 1000 HZ · RUST VALIDATION CATALOG';
+  document.querySelector('.legend').textContent = 'FREE DRIVE · SIMULATION RAW · WASD / arrows · K/L snapshot · validation maneuvers run headlessly in the same WASM plant';
+  document.querySelector('#labPanel').hidden = false;
+  document.querySelector('#lap').closest('.metric').querySelector('label').textContent = 'ENVIRONMENT';
+  document.querySelector('#performance').closest('.metric').querySelector('label').textContent = '1-CAR WASM BENCH';
+  const profileSelect = document.querySelector('#driveProfile');
+  profileSelect.innerHTML = '<option value="simulation">SIMULATION · RAW · FIXED FOR LAB</option>';
+  profileSelect.disabled = true;
 }
 const ui = Object.fromEntries(
   ['speed', 'rpm', 'gear', 'time', 'lap', 'trackLength', 'lod', 'damage', 'damageText', 'tires', 'performance', 'inputDevice', 'ffb', 'snapshotStatus', 'quality', 'cameraPreset', 'driveProfile', 'keyboardPolicy', 'inputResponse', 'calibrationStatus'].map(
@@ -44,14 +57,17 @@ let gear = 0;
 let completedLaps = 0;
 let previousProgress;
 let cameraPreset = 'chase';
-let inputConfig = inputConfigFromSources(inputParameters, (() => {
+const storedInputConfig = (() => {
   try {
     return localStorage.getItem(INPUT_CONFIG_STORAGE_KEY) || '';
   } catch {
     return '';
   }
-})());
-const sharedDriveProfile = inputConfig.driveProfile;
+})();
+let inputConfig = inputConfigFromSources(inputParameters, storedInputConfig);
+// Capture the shared circuit profile before URL/demo overrides are applied.
+// Visiting either specialized demo can therefore never poison it.
+const sharedDriveProfile = inputConfigFromSources('', storedInputConfig).driveProfile;
 if (ARCADE_DEMO && !inputParameters.has('driveProfile')) {
   let arcadeProfile = 'arcade';
   try {
@@ -62,10 +78,11 @@ if (ARCADE_DEMO && !inputParameters.has('driveProfile')) {
   }
   inputConfig = { ...inputConfig, driveProfile: arcadeProfile, keyboardAdaptive: arcadeProfile !== 'simulation' };
 }
+if (SIMULATION_LAB) inputConfig = { ...inputConfig, driveProfile: 'simulation', keyboardAdaptive: false };
 
 function persistInputConfig() {
   try {
-    const shared = sharedInputConfigForPersistence(inputConfig, sharedDriveProfile, ARCADE_DEMO);
+    const shared = sharedInputConfigForPersistence(inputConfig, sharedDriveProfile, ARCADE_DEMO || SIMULATION_LAB);
     localStorage.setItem(INPUT_CONFIG_STORAGE_KEY, JSON.stringify(shared));
     if (ARCADE_DEMO) localStorage.setItem(ARCADE_PROFILE_STORAGE_KEY, inputConfig.driveProfile);
   } catch {
@@ -75,7 +92,9 @@ function persistInputConfig() {
 }
 
 function setDriveProfile(requested, persist = true) {
-  const driveProfile = DRIVE_PROFILES.includes(requested) ? requested : (ARCADE_DEMO ? 'arcade' : 'sport');
+  const driveProfile = SIMULATION_LAB
+    ? 'simulation'
+    : DRIVE_PROFILES.includes(requested) ? requested : (ARCADE_DEMO ? 'arcade' : 'sport');
   const keyboardAdaptive = driveProfile !== 'simulation';
   inputConfig = { ...inputConfig, driveProfile, keyboardAdaptive };
   if (ui.driveProfile) ui.driveProfile.value = driveProfile;
@@ -633,6 +652,21 @@ class Renderer3D {
     this.grandstand(stands, start.yaw, trackHalfWidth, 1);
   }
 
+  laboratoryGround(playerPosition) {
+    this.box([playerPosition[0], -0.22, playerPosition[2]], [520, 0.32, 520], rgb('#16252b'));
+    const spacing = 20;
+    const centerX = Math.round(playerPosition[0] / spacing) * spacing;
+    const centerZ = Math.round(playerPosition[2] / spacing) * spacing;
+    for (let offset = -200; offset <= 200; offset += spacing) {
+      this.box([centerX + offset, 0.012, centerZ], [0.045, 0.014, 400], rgb('#34515b', 0.72));
+      this.box([centerX, 0.013, centerZ + offset], [400, 0.014, 0.045], rgb('#34515b', 0.72));
+    }
+    for (let marker = -180; marker <= 180; marker += 20) {
+      this.box([centerX - 3.5, 0.035, centerZ + marker], [0.18, 0.02, 2.5], rgb('#e8edf0'));
+      this.box([centerX + 3.5, 0.035, centerZ + marker], [0.18, 0.02, 2.5], rgb('#e8edf0'));
+    }
+  }
+
   scene(physics, elapsed, alpha) {
     const gl = this.gl;
     const aspect = this.resize();
@@ -685,7 +719,8 @@ class Renderer3D {
     this.drawCalls = 0;
     this.beginBatch();
 
-    this.raceCourse(physics, [x, y, z], physics.physics_track_half_width());
+    if (SIMULATION_LAB) this.laboratoryGround([x, y, z]);
+    else this.raceCourse(physics, [x, y, z], physics.physics_track_half_width());
 
     const colors = ['#b9ef42', '#34d6c6', '#45b9dd', '#24d46b', '#70db31', '#d8e52d', '#f0bf33', '#ff8a38', '#f05e52', '#c766ef'];
     for (let index = 0; index < physics.physics_vehicle_count(); index++) {
@@ -706,12 +741,17 @@ function updateUi() {
   ui.rpm.textContent = Math.round(api.physics_rpm(0));
   ui.gear.textContent = Math.round(api.physics_gear(0));
   ui.time.textContent = api.physics_time().toFixed(2);
-  const progress = api.physics_track_progress(0);
-  if (previousProgress > 0.82 && progress < 0.18) completedLaps += 1;
-  if (previousProgress < 0.18 && progress > 0.82) completedLaps = Math.max(0, completedLaps - 1);
-  previousProgress = progress;
-  ui.lap.textContent = `${completedLaps + 1} · ${Math.round(progress * 100)}%`;
-  ui.trackLength.textContent = `${(api.physics_track_length() / 1000).toFixed(2)} km`;
+  if (SIMULATION_LAB) {
+    ui.lap.textContent = 'FLAT PROVING GROUND';
+    ui.trackLength.textContent = '1 ENGINEERING VEHICLE';
+  } else {
+    const progress = api.physics_track_progress(0);
+    if (previousProgress > 0.82 && progress < 0.18) completedLaps += 1;
+    if (previousProgress < 0.18 && progress > 0.82) completedLaps = Math.max(0, completedLaps - 1);
+    previousProgress = progress;
+    ui.lap.textContent = `${completedLaps + 1} · ${Math.round(progress * 100)}%`;
+    ui.trackLength.textContent = `${(api.physics_track_length() / 1000).toFixed(2)} km`;
+  }
   ui.lod.textContent = Math.round(api.physics_fidelity(0) * 100);
   ui.ffb.textContent = `${api.physics_ffb_steering_torque(0).toFixed(1)} Nm`;
   const damage = api.physics_damage(0);
@@ -730,6 +770,12 @@ function updateUi() {
       ).toFixed(1)} °C</b><span>${(api.physics_tire_pressure(0, wheel) / 1000).toFixed(0)} kPa</span></div>`,
     )
     .join('');
+  if (SIMULATION_LAB && !window.__MY_PHYSICS_LAB__?.liveDisplayPaused) {
+    document.querySelector('#labYaw').textContent = `${api.physics_yaw_rate(0).toFixed(3)} rad/s`;
+    document.querySelector('#labSlip').textContent = `${(api.physics_body_slip_angle(0) * 180 / Math.PI).toFixed(2)}°`;
+    document.querySelector('#labAy').textContent = `${api.physics_lateral_acceleration(0).toFixed(2)} m/s²`;
+    document.querySelector('#labWater').textContent = `${api.physics_road_water_depth_mm(0).toFixed(2)} mm`;
+  }
 }
 
 let renderer;
@@ -768,6 +814,166 @@ function readInputStage(stage) {
   return result;
 }
 
+const VALIDATION_SCENARIOS = Object.freeze([
+  { id: 'coast_down', title: 'Neutral coast-down from 100 km/h' },
+  { id: 'zero_to_100', title: 'Standing full-throttle acceleration' },
+  { id: 'hundred_to_zero', title: 'ABS full braking from 100 km/h' },
+  { id: 'steady_steer', title: '0.5° ramp-and-hold at 72 km/h' },
+  { id: 'step_steer', title: '1° step steer at 90 km/h' },
+  { id: 'slalom', title: '0.5 Hz sine steer at 65 km/h' },
+]);
+const VALIDATION_METRICS = Object.freeze([
+  'final speed (m/s)', 'distance (m)', 'target time (s)', 'peak yaw rate (rad/s)',
+  'final |yaw| (rad/s)', 'peak sideslip (rad)', 'peak wheel slip', 'minimum wheel load (N)', 'yaw reversals',
+]);
+
+function validationFingerprint() {
+  return `${(api.physics_validation_fingerprint_high() >>> 0).toString(16).padStart(8, '0')}${
+    (api.physics_validation_fingerprint_low() >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function validationReport(index) {
+  const passed = api.physics_validation_run(index) !== 0;
+  const fingerprint = validationFingerprint();
+  const samples = Array.from({ length: api.physics_validation_sample_count() }, (_, sample) => ({
+    time: api.physics_validation_sample(sample, 0),
+    speed: api.physics_validation_sample(sample, 1),
+    yaw: api.physics_validation_sample(sample, 2),
+    sideslip: api.physics_validation_sample(sample, 3),
+    acceleration: [4, 5, 6].map((field) => api.physics_validation_sample(sample, field)),
+    wheelSlip: [7, 8, 9, 10].map((field) => api.physics_validation_sample(sample, field)),
+    wheelSlipAngle: [11, 12, 13, 14].map((field) => api.physics_validation_sample(sample, field)),
+    wheelLoad: [15, 16, 17, 18].map((field) => api.physics_validation_sample(sample, field)),
+  }));
+  const checks = Array.from({ length: api.physics_validation_check_count() }, (_, check) => ({
+    metric: Math.round(api.physics_validation_check(check, 0)),
+    value: api.physics_validation_check(check, 1),
+    min: api.physics_validation_check(check, 2),
+    max: api.physics_validation_check(check, 3),
+    passed: api.physics_validation_check(check, 4) !== 0,
+  }));
+  return { scenario: VALIDATION_SCENARIOS[index], passed, fingerprint, samples, checks };
+}
+
+function drawLabGraph(samples, signal = document.querySelector('#labGraphSignal')?.value || 'motion') {
+  const canvas = document.querySelector('#labGraph');
+  const context = canvas.getContext('2d');
+  const { width, height } = canvas;
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = '#080d10';
+  context.fillRect(0, 0, width, height);
+  if (samples.length < 2) return;
+  const pad = 28;
+  context.strokeStyle = '#25343a';
+  context.lineWidth = 1;
+  for (let row = 0; row <= 4; row += 1) {
+    const y = pad + (height - pad * 2) * row / 4;
+    context.beginPath(); context.moveTo(pad, y); context.lineTo(width - pad, y); context.stroke();
+  }
+  const maxTime = samples.at(-1).time || 1;
+  const trace = (values, minimum, maximum, color) => {
+    context.strokeStyle = color; context.lineWidth = 2; context.beginPath();
+    samples.forEach((sample, index) => {
+      const x = pad + sample.time / maxTime * (width - pad * 2);
+      const value = values[index];
+      const y = height - pad - (value - minimum) / Math.max(1e-9, maximum - minimum) * (height - pad * 2);
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    });
+    context.stroke();
+  };
+  const palette = ['#57d9ff', '#ffbd52', '#d47dff', '#77e58f'];
+  let label;
+  if (signal === 'motion') {
+    const speed = samples.map((sample) => sample.speed);
+    const yaw = samples.map((sample) => sample.yaw);
+    const beta = samples.map((sample) => sample.sideslip);
+    trace(speed, 0, Math.max(1, ...speed), palette[0]);
+    const motionPeak = Math.max(0.05, ...yaw.map(Math.abs), ...beta.map(Math.abs));
+    trace(yaw, -motionPeak, motionPeak, palette[1]);
+    trace(beta, -motionPeak, motionPeak, palette[2]);
+    label = 'SPEED · YAW · BETA (independent scales)';
+  } else {
+    const field = signal === 'slip' ? 'wheelSlip' : signal === 'slipAngle' ? 'wheelSlipAngle' : 'wheelLoad';
+    const values = samples.flatMap((sample) => sample[field]);
+    const minimum = signal === 'load' ? 0 : Math.min(-0.01, ...values);
+    const maximum = Math.max(signal === 'load' ? 1 : 0.01, ...values);
+    for (let wheel = 0; wheel < 4; wheel += 1) trace(samples.map((sample) => sample[field][wheel]), minimum, maximum, palette[wheel]);
+    label = `${signal === 'slip' ? 'LONGITUDINAL SLIP' : signal === 'slipAngle' ? 'SLIP ANGLE' : 'NORMAL LOAD'} · FL FR RL RR`;
+  }
+  context.fillStyle = '#8ba1a8'; context.font = '10px ui-monospace, monospace';
+  context.fillText(label, pad, 14);
+  context.fillStyle = '#8ba1a8'; context.fillText(`${maxTime.toFixed(1)} s`, width - 58, height - 8);
+}
+
+function showValidation(report, replayFingerprint = null) {
+  const result = document.querySelector('#labResult');
+  const replayMatch = replayFingerprint === null || replayFingerprint === report.fingerprint;
+  result.className = `lab-result ${report.passed && replayMatch ? 'pass' : 'fail'}`;
+  result.textContent = `${report.passed ? 'PASS' : 'FAIL'} · ${report.scenario.title} · fingerprint ${report.fingerprint}${
+    replayFingerprint === null ? '' : replayMatch ? ' · REPEAT BIT-EXACT' : ` · REPEAT MISMATCH ${replayFingerprint}`}`;
+  document.querySelector('#labChecks').innerHTML = report.checks.map((check) =>
+    `<div class="lab-check ${check.passed ? 'pass' : ''}"><span>${VALIDATION_METRICS[check.metric]}</span><b>${check.value.toFixed(4)}</b><span>[${check.min.toFixed(3)}, ${check.max.toFixed(3)}]</span><span>${check.passed ? 'PASS' : 'FAIL'}</span></div>`
+  ).join('');
+  drawLabGraph(report.samples);
+  window.__MY_PHYSICS_LAB__ = { ...window.__MY_PHYSICS_LAB__, lastReport: report, replayMatch };
+}
+
+function installSimulationLab() {
+  const scenario = document.querySelector('#labScenario');
+  const run = () => {
+    const report = validationReport(Number(scenario.value));
+    showValidation(report);
+    return report;
+  };
+  document.querySelector('#labRun').addEventListener('click', run);
+  document.querySelector('#labRepeat').addEventListener('click', () => {
+    const first = run();
+    const second = validationReport(Number(scenario.value));
+    showValidation(second, first.fingerprint);
+  });
+  document.querySelector('#labReplay').addEventListener('click', () => {
+    const report = run();
+    const replayMatch = api.physics_validation_midpoint_replay(Number(scenario.value)) !== 0;
+    const result = document.querySelector('#labResult');
+    result.className = `lab-result ${report.passed && replayMatch ? 'pass' : 'fail'}`;
+    result.textContent = `${report.passed ? 'PASS' : 'FAIL'} · ${report.scenario.title} · fingerprint ${report.fingerprint} · MIDPOINT SNAPSHOT ${replayMatch ? 'EXACT' : 'MISMATCH'}`;
+    window.__MY_PHYSICS_LAB__ = { ...window.__MY_PHYSICS_LAB__, midpointReplayMatch: replayMatch };
+  });
+  document.querySelector('#labRunAll').addEventListener('click', () => {
+    const reports = VALIDATION_SCENARIOS.map((_, index) => validationReport(index));
+    const allPassed = reports.every((report) => report.passed);
+    showValidation(reports.at(-1));
+    const result = document.querySelector('#labResult');
+    result.className = `lab-result ${allPassed ? 'pass' : 'fail'}`;
+    result.textContent = `${allPassed ? 'ALL PASS' : 'CATALOG FAILURE'} · ${reports.length}/6 official EngineeringReference maneuvers · fixed dt 0.001 s`;
+    document.querySelector('#labChecks').innerHTML = reports.map((report) => `<div class="lab-check ${report.passed ? 'pass' : ''}"><span>${report.scenario.id}</span><b>${report.passed ? 'PASS' : 'FAIL'}</b><span>${report.fingerprint}</span><span>${report.checks.length} envelopes</span></div>`).join('');
+    window.__MY_PHYSICS_LAB__ = { ...window.__MY_PHYSICS_LAB__, catalogReports: reports, allPassed };
+  });
+  document.querySelector('#labFreeDrive').addEventListener('click', () => {
+    api.physics_lab_reset_free_drive();
+    setDriveProfile('simulation', false);
+    document.querySelector('#labResult').className = 'lab-result';
+    document.querySelector('#labResult').textContent = 'FREE DRIVE RESET · ENGINEERING REFERENCE · DRY ROAD';
+  });
+  let liveDisplayPaused = false;
+  document.querySelector('#labPause').addEventListener('click', (event) => {
+    liveDisplayPaused = !liveDisplayPaused;
+    event.currentTarget.textContent = liveDisplayPaused ? 'RESUME LIVE DISPLAY' : 'PAUSE LIVE DISPLAY';
+    window.__MY_PHYSICS_LAB__.liveDisplayPaused = liveDisplayPaused;
+  });
+  document.querySelector('#labGraphSignal').addEventListener('change', () => {
+    const report = window.__MY_PHYSICS_LAB__.lastReport;
+    if (report) drawLabGraph(report.samples);
+  });
+  window.__MY_PHYSICS_LAB__ = { runScenario(index = Number(scenario.value), replay = false) {
+    scenario.value = String(index);
+    const first = validationReport(index);
+    const second = replay ? validationReport(index) : null;
+    showValidation(second || first, second ? first.fingerprint : null);
+    return second || first;
+  }, runAll() { document.querySelector('#labRunAll').click(); return window.__MY_PHYSICS_LAB__.catalogReports; } };
+}
+
 function frame(now) {
   const elapsed = Math.min((now - previous) / 1000, 0.05);
   previous = now;
@@ -784,7 +990,7 @@ function frame(now) {
       : inputConfig.driveProfile === 'simulation'
         ? `${inputConfig.response.toUpperCase()} GAMEPAD · NORMALIZED RAW · NO SPEED ASSIST`
         : `${profileName} ${inputConfig.response.toUpperCase()} GAMEPAD · SPEED POLICY${targetLabel}`;
-  const keyboardToggleHint = input.deviceKind === 1 ? ' · I: SPORT/SIM' : '';
+  const keyboardToggleHint = input.deviceKind === 1 && !SIMULATION_LAB ? ' · I: SPORT/SIM' : '';
   ui.inputDevice.textContent = api.physics_player_autopilot()
     ? `AI DRIVER · P · ${escStatus}`
     : `${input.device} · ${steeringMode}${keyboardToggleHint} · ${escStatus} · E`;
@@ -823,8 +1029,12 @@ function frame(now) {
     experienceProfile: DRIVE_PROFILES[api.physics_experience_profile()] || 'sport',
     lateralAccelTargetMps2: api.physics_policy_lateral_accel_target(),
     gamepadAssist: api.physics_gamepad_assist() !== 0,
-    demoVehiclePreset: api.physics_demo_vehicle_preset() === 2 ? 'arcade_fun' : 'race_gameplay',
-    vehicleDefinitionRevision: api.physics_demo_vehicle_preset() === 2 ? 'arcade-fun-v1' : 'race-gameplay-v1',
+    demoVehiclePreset: api.physics_demo_vehicle_preset() === 3
+      ? 'engineering_reference'
+      : api.physics_demo_vehicle_preset() === 2 ? 'arcade_fun' : 'race_gameplay',
+    vehicleDefinitionRevision: api.physics_demo_vehicle_preset() === 3
+      ? 'vehicle-definition-v0.1'
+      : api.physics_demo_vehicle_preset() === 2 ? 'arcade-fun-v1' : 'race-gameplay-v1',
     steer: input.steer,
     throttle: input.throttle,
     brake: input.brake,
@@ -850,7 +1060,7 @@ try {
   if (!response.ok) throw new Error(`HTTP ${response.status}: run scripts/build-wasm.sh first`);
   const result = await WebAssembly.instantiateStreaming(response, {});
   api = result.instance.exports;
-  api.physics_select_demo_vehicle_preset(ARCADE_DEMO ? 2 : 1);
+  api.physics_select_demo_vehicle_preset(SIMULATION_LAB ? 3 : ARCADE_DEMO ? 2 : 1);
   document.querySelector('#saveSnapshot').addEventListener('click', () => {
     const bytes = api.physics_snapshot_save();
     ui.snapshotStatus.textContent = `SAVED · ${(bytes / 1024).toFixed(0)} KiB`;
@@ -895,10 +1105,11 @@ try {
   ui.calibrationStatus.textContent = inputConfig.calibratedDevice ? `SAVED · ${inputConfig.calibratedDevice}` : 'DEFAULT RANGE';
   benchmarkPhysics();
   setDriveProfile(inputConfig.driveProfile, false);
+  if (SIMULATION_LAB) installSimulationLab();
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
-  status.textContent = ARCADE_DEMO
-    ? 'ARCADE FUN ONLINE · SAME WASM PLANT · AUTHORED PARAMETERS'
-    : '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
+  status.textContent = SIMULATION_LAB
+    ? 'SIMULATION LAB ONLINE · ENGINEERING REFERENCE · RAW INPUT'
+    : ARCADE_DEMO ? 'ARCADE FUN ONLINE · SAME WASM PLANT · AUTHORED PARAMETERS' : '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
   status.classList.add('ready');
   requestAnimationFrame(frame);
 } catch (error) {

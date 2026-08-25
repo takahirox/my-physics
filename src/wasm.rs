@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 
 static DEMO: OnceLock<Mutex<PhysicsWorld>> = OnceLock::new();
 static SAVED_SNAPSHOT: OnceLock<Mutex<Option<SavedBrowserState>>> = OnceLock::new();
+static VALIDATION_REPORT: OnceLock<Mutex<Option<crate::validation::ScenarioReport>>> = OnceLock::new();
 static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
 static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
 static KEYBOARD_ASSIST_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -62,9 +63,14 @@ fn demo() -> &'static Mutex<PhysicsWorld> {
 fn selected_demo() -> PhysicsWorld {
     let preset = match DEMO_VEHICLE_PRESET.load(Ordering::Relaxed) {
         2 => VehiclePreset::ArcadeFun,
+        3 => VehiclePreset::EngineeringReference,
         _ => VehiclePreset::RaceGameplay,
     };
-    PhysicsWorld::demo_with_preset(10, preset)
+    if preset == VehiclePreset::EngineeringReference {
+        PhysicsWorld::engineering_lab()
+    } else {
+        PhysicsWorld::demo_with_preset(10, preset)
+    }
 }
 fn with_world<R>(f: impl FnOnce(&mut PhysicsWorld) -> R) -> R {
     let mut guard = demo().lock().unwrap_or_else(|e| e.into_inner());
@@ -75,6 +81,9 @@ fn read_vehicle(index: u32, f: impl FnOnce(&crate::vehicle::Vehicle) -> f64) -> 
 }
 fn saved_snapshot() -> &'static Mutex<Option<SavedBrowserState>> {
     SAVED_SNAPSHOT.get_or_init(|| Mutex::new(None))
+}
+fn validation_report() -> &'static Mutex<Option<crate::validation::ScenarioReport>> {
+    VALIDATION_REPORT.get_or_init(|| Mutex::new(None))
 }
 fn yaw(q: Quat) -> f64 {
     (2.0 * (q.w * q.y + q.x * q.z)).atan2(1.0 - 2.0 * (q.y * q.y + q.x * q.x))
@@ -102,10 +111,11 @@ pub extern "C" fn physics_reset() {
 }
 
 /// Selects the authored physical definition used by subsequent resets and
-/// immediately starts that demo. 1 = Race Gameplay, 2 = Arcade Fun.
+/// immediately starts that demo. 1 = Race Gameplay, 2 = Arcade Fun,
+/// 3 = Engineering Reference (single-vehicle proving ground).
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_select_demo_vehicle_preset(preset: u32) {
-    let preset = if preset == 2 { 2 } else { 1 };
+    let preset = if matches!(preset, 2 | 3) { preset as u8 } else { 1 };
     DEMO_VEHICLE_PRESET.store(preset, Ordering::Relaxed);
     physics_reset();
 }
@@ -113,6 +123,15 @@ pub extern "C" fn physics_select_demo_vehicle_preset(preset: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_demo_vehicle_preset() -> u32 {
     u32::from(DEMO_VEHICLE_PRESET.load(Ordering::Relaxed))
+}
+
+/// Restores the collision-free engineering proving ground for free drive.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_lab_reset_free_drive() {
+    DEMO_VEHICLE_PRESET.store(3, Ordering::Relaxed);
+    physics_reset();
+    EXPERIENCE_PROFILE.store(PROFILE_SIMULATION, Ordering::Relaxed);
+    KEYBOARD_ASSIST_ENABLED.store(false, Ordering::Relaxed);
 }
 
 fn set_analog_input(device_kind: u8, raw: DriverInput, normalized: DriverInput) {
@@ -518,6 +537,127 @@ pub extern "C" fn physics_render_yaw(i: u32, alpha: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_speed(i: u32) -> f64 {
     read_vehicle(i, |v| v.telemetry.speed_mps)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_yaw_rate(i: u32) -> f64 {
+    read_vehicle(i, |v| v.telemetry.yaw_rate_rad_s)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_lateral_acceleration(i: u32) -> f64 {
+    read_vehicle(i, |v| v.state.orientation.conjugate().rotate(v.telemetry.acceleration_mps2).x)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_body_slip_angle(i: u32) -> f64 {
+    read_vehicle(i, |v| {
+        let local = v.state.orientation.conjugate().rotate(v.state.linear_velocity_mps);
+        local.x.atan2((-local.z).abs().max(1.0e-9))
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_road_water_depth_mm(i: u32) -> f64 {
+    with_world(|world| {
+        world
+            .vehicles
+            .get(i as usize)
+            .map_or(f64::NAN, |vehicle| world.road.sample(vehicle.state.position_m).water_depth_m * 1000.0)
+    })
+}
+/// Runs one scenario from the native validation catalog. The report is kept
+/// outside the live demo world, so inspecting a maneuver cannot perturb free
+/// drive or alter its snapshot/replay history.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_run(scenario_index: u32) -> u32 {
+    let Some(definition) = crate::validation::SCENARIOS.get(scenario_index as usize) else {
+        return 0;
+    };
+    let report = crate::validation::run_scenario(definition);
+    let passed = report.passed();
+    *validation_report().lock().unwrap_or_else(|error| error.into_inner()) = Some(report);
+    u32::from(passed)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_midpoint_replay(scenario_index: u32) -> u32 {
+    crate::validation::SCENARIOS
+        .get(scenario_index as usize)
+        .map_or(0, |definition| u32::from(crate::validation::verify_midpoint_snapshot_replay(definition)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_sample_count() -> u32 {
+    validation_report()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map_or(0, |report| report.samples.len() as u32)
+}
+
+/// sample fields: 0=time, 1=speed, 2=yaw rate, 3=sideslip,
+/// 4..=6=world acceleration xyz, 7..=10=wheel slip,
+/// 11..=14=wheel slip angle, 15..=18=wheel normal load.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_sample(sample: u32, field: u32) -> f64 {
+    validation_report()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .and_then(|report| report.samples.get(sample as usize))
+        .map_or(f64::NAN, |sample| match field {
+            0 => sample.time_s,
+            1 => sample.speed_mps,
+            2 => sample.yaw_rate_rad_s,
+            3 => sample.sideslip_rad,
+            4..=6 => sample.acceleration_mps2[(field - 4) as usize],
+            7..=10 => sample.wheel_slip[(field - 7) as usize],
+            11..=14 => sample.wheel_slip_angle_rad[(field - 11) as usize],
+            15..=18 => sample.wheel_load_n[(field - 15) as usize],
+            _ => f64::NAN,
+        })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_check_count() -> u32 {
+    validation_report()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map_or(0, |report| report.checks.len() as u32)
+}
+
+/// check fields: 0=metric enum, 1=value, 2=min, 3=max, 4=passed.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_check(check: u32, field: u32) -> f64 {
+    validation_report()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .and_then(|report| report.checks.get(check as usize))
+        .map_or(f64::NAN, |check| match field {
+            0 => check.metric as u8 as f64,
+            1 => check.value.unwrap_or(f64::NAN),
+            2 => check.min,
+            3 => check.max,
+            4 => f64::from(check.passed),
+            _ => f64::NAN,
+        })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_fingerprint_low() -> u32 {
+    validation_report()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map_or(0, |report| report.fingerprint as u32)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_validation_fingerprint_high() -> u32 {
+    validation_report()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map_or(0, |report| (report.fingerprint >> 32) as u32)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_rpm(i: u32) -> f64 {
