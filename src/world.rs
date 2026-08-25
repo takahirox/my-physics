@@ -197,15 +197,40 @@ impl PhysicsWorld {
     }
     pub fn step_fixed(&mut self, steps: u32) -> Result<(), StepError> {
         for _ in 0..steps {
-            self.step_once(self.config.fixed_dt_s)?;
+            let phase = self.step_index;
+            self.step_once(self.config.fixed_dt_s, phase, false)?;
+            self.step_index += 1;
         }
         Ok(())
     }
+    /// Advances one externally visible variable application step.
+    ///
+    /// The interval is internally substepped at no more than 1 ms. The public
+    /// `step_index` advances once, so input frames recorded around variable
+    /// calls use application-step indices rather than internal substep indices.
     pub fn step_variable(&mut self, dt_s: f64) -> Result<(), StepError> {
         if !dt_s.is_finite() || dt_s <= 0.0 || dt_s > self.config.max_variable_dt_s {
             return Err(StepError::InvalidTimestep);
         }
-        self.step_once(dt_s)
+        // Vehicle/tire/powertrain dynamics are intentionally integrated at the
+        // same maximum rate as the 1 kHz reference mode. A variable application
+        // step is one externally visible step, but may contain several internal
+        // physics substeps. This preserves input-history and public step-number
+        // semantics while avoiding a 5--20 ms step through the stiff wheel and
+        // suspension equations.
+        const MAX_INTERNAL_DT_S: f64 = 0.001;
+        let configured_dt = self.config.fixed_dt_s.clamp(f64::MIN_POSITIVE, MAX_INTERNAL_DT_S);
+        let substeps = (dt_s / configured_dt).ceil().max(1.0) as u32;
+        let substep_dt = dt_s / f64::from(substeps);
+        for substep in 0..substeps {
+            // Variable/offline integration favors convergence over LOD force
+            // caching. Recompute every internal substep so repeated calls do
+            // not derive a drifting LOD phase from the externally visible
+            // (one-per-call) step counter.
+            self.step_once(substep_dt, u64::from(substep), true)?;
+        }
+        self.step_index += 1;
+        Ok(())
     }
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -234,6 +259,9 @@ impl PhysicsWorld {
         self.tire_model = s.tire_model;
         self.recorded_inputs.clear();
     }
+    /// Replays fixed-timestep input history. Variable-step applications must
+    /// additionally record their application dt sequence; that format is not
+    /// part of the v0.1 input-history archive.
     pub fn replay_from(&mut self, snapshot: &Snapshot, inputs: &[InputFrame], end_step: u64) -> Result<(), StepError> {
         self.restore(snapshot);
         let mut cursor = 0;
@@ -251,7 +279,7 @@ impl PhysicsWorld {
         self.snapshot().fingerprint()
     }
 
-    fn step_once(&mut self, dt: f64) -> Result<(), StepError> {
+    fn step_once(&mut self, dt: f64, integration_phase: u64, force_recompute: bool) -> Result<(), StepError> {
         self.update_lod(dt);
         self.road.update_weather(self.rain_rate_m_s, dt);
         for n in 0..self.vehicles.len() {
@@ -265,7 +293,7 @@ impl PhysicsWorld {
             } else {
                 10
             };
-            let recompute = self.step_index.is_multiple_of(stride);
+            let recompute = force_recompute || integration_phase.is_multiple_of(stride);
             integrate_vehicle(
                 &mut self.vehicles[n],
                 &mut self.road,
@@ -284,7 +312,6 @@ impl PhysicsWorld {
         self.spawn_detached_components();
         self.integrate_detached(dt);
         self.time_s += dt;
-        self.step_index += 1;
         if self.vehicles.iter().any(|v| !v.state.position_m.finite() || !v.state.linear_velocity_mps.finite()) {
             return Err(StepError::NonFiniteState);
         }
@@ -572,52 +599,11 @@ fn apply_impact_damage(v: &mut Vehicle, energy_j: f64, normal_world: Vec3) {
 }
 
 fn fingerprint_snapshot(s: &Snapshot) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    fn mix(h: &mut u64, v: u64) {
-        *h ^= v;
-        *h = h.wrapping_mul(0x100000001b3);
-    }
-    mix(&mut h, s.step);
-    mix(&mut h, s.time_s.to_bits());
-    for v in &s.vehicles {
-        let st = &v.state;
-        for x in [
-            st.position_m.x,
-            st.position_m.y,
-            st.position_m.z,
-            st.orientation.w,
-            st.orientation.x,
-            st.orientation.y,
-            st.orientation.z,
-            st.linear_velocity_mps.x,
-            st.linear_velocity_mps.y,
-            st.linear_velocity_mps.z,
-            st.angular_velocity_rad_s.x,
-            st.angular_velocity_rad_s.y,
-            st.angular_velocity_rad_s.z,
-            st.powertrain.engine_rpm,
-            st.powertrain.fuel_kg,
-            st.damage.body,
-        ] {
-            mix(&mut h, x.to_bits());
-        }
-        for w in st.wheels {
-            for x in [
-                w.angular_velocity_rad_s,
-                w.suspension_compression_m,
-                w.tire.temperature_k,
-                w.tire.tread_temperature_k,
-                w.tire.wear,
-                w.tire.pressure_pa,
-            ] {
-                mix(&mut h, x.to_bits());
-            }
-        }
-    }
-    for c in s.road.cells() {
-        for x in [c.temperature_k, c.rubber, c.water_depth_m, c.contamination] {
-            mix(&mut h, x.to_bits());
-        }
-    }
-    h
+    // The archive is the canonical complete-state representation. Its final
+    // eight bytes are an FNV-1a checksum over every serialized field, including
+    // configuration, road, definitions, all thermal/wear states, controls,
+    // cached forces, colliders and detached bodies. Reusing it here prevents a
+    // hand-maintained partial fingerprint from silently omitting new state.
+    let bytes = crate::archive::encode_snapshot(s);
+    u64::from_le_bytes(bytes[bytes.len() - 8..].try_into().expect("snapshot archive checksum"))
 }

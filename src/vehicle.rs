@@ -466,8 +466,12 @@ impl Vehicle {
         let slip = engine_omega - driven_omega;
         let clutch_health = if p.clutch_failed { 0.0 } else { 1.0 - p.clutch_wear * 0.8 };
         let clutch_capacity = d.transmission.clutch_capacity_nm * clutch_health * p.clutch_engagement;
-        let clutch_torque =
-            (slip * d.transmission.clutch_stiffness_nm_per_rad_s).clamp(-clutch_capacity, clutch_capacity);
+        let clutch_torque = if ratio.abs() <= f64::EPSILON {
+            0.0
+        } else {
+            (slip * d.transmission.clutch_stiffness_nm_per_rad_s).clamp(-clutch_capacity, clutch_capacity)
+        };
+        let friction = 12.0 + engine_omega * 0.025;
         let engine_torque = {
             let curve = &d.engine.torque_curve;
             let mut torque = curve[0].1;
@@ -485,11 +489,19 @@ impl Vehicle {
             let shift_torque_cut = if p.shift_timer_s > 0.0 { 0.0 } else { 1.0 };
             if p.failed || p.fuel_kg <= 0.0 { 0.0 } else { torque * p.throttle_actual * limiter * shift_torque_cut }
         };
-        let friction = 12.0 + engine_omega * 0.025;
-        let domega = (engine_torque - clutch_torque - friction) / d.engine.inertia_kg_m2 * dt;
+        // A running ICE must burn fuel to balance its internal friction at
+        // idle. Previously the lower RPM clamp supplied this energy for free.
+        // The idle governor only supplies the part not already produced by the
+        // driver's throttle and fades out over the first 250 RPM above idle.
+        let idle_blend = clamp01((d.engine.idle_rpm + 250.0 - p.engine_rpm) / 250.0);
+        let idle_governor_torque =
+            if p.failed || p.fuel_kg <= 0.0 { 0.0 } else { (friction - engine_torque).max(0.0) * idle_blend };
+        let combustion_torque = engine_torque + idle_governor_torque;
+        let domega = (combustion_torque - clutch_torque - friction) / d.engine.inertia_kg_m2 * dt;
         let idle_omega = d.engine.idle_rpm * core::f64::consts::TAU / 60.0;
         let limiter_omega = (d.engine.redline_rpm + 50.0) * core::f64::consts::TAU / 60.0;
-        let new_omega = (engine_omega + domega).clamp(idle_omega, limiter_omega);
+        let minimum_omega = if p.failed || p.fuel_kg <= 0.0 { 0.0 } else { idle_omega };
+        let new_omega = (engine_omega + domega).clamp(minimum_omega, limiter_omega);
         p.engine_rpm = new_omega * 60.0 / core::f64::consts::TAU;
         let wheel_torque = clutch_torque * ratio * 0.94;
         let slip_power = (clutch_torque * slip).abs();
@@ -500,10 +512,18 @@ impl Vehicle {
         p.gearbox_wear = (p.gearbox_wear + wheel_torque.abs() * 1.0e-12 * dt).clamp(0.0, 1.0);
         p.clutch_failed = p.clutch_wear >= 1.0;
         p.gearbox_failed = p.gearbox_wear >= 1.0;
-        let fuel_power = (engine_torque * new_omega).max(0.0) / d.engine.efficiency.max(0.05);
+        let efficiency = d.engine.efficiency.max(0.05);
+        let load_fuel_power = (engine_torque * new_omega).max(0.0) / efficiency;
+        let idle_fuel_power = (idle_governor_torque * new_omega).max(0.0) / efficiency;
+        let fuel_power = load_fuel_power + idle_fuel_power;
         p.fuel_kg = (p.fuel_kg - fuel_power / d.engine.fuel_energy_j_kg * dt).max(0.0);
+        // With no detailed radiator/airflow model in v0.1, separate stationary
+        // idle heat rejection from the existing under-load calibration. This
+        // gives the idle governor's real fuel energy a stable warm equilibrium
+        // instead of incorrectly cooling a running engine to ambient.
+        let combustion_heating_k_s = load_fuel_power * 1.2e-5 + idle_fuel_power * 4.25e-4;
         p.engine_temperature_k +=
-            (fuel_power * 1.2e-5 - (p.engine_temperature_k - p.coolant_temperature_k) * 0.18) * dt;
+            (combustion_heating_k_s - (p.engine_temperature_k - p.coolant_temperature_k) * 0.18) * dt;
         p.coolant_temperature_k += (p.engine_temperature_k - p.coolant_temperature_k) * 0.035 * dt
             + (300.0 - p.coolant_temperature_k) * 0.006 * dt;
         p.oil_temperature_k +=

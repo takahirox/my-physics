@@ -2,6 +2,7 @@ use my_physics::circuit::{ai_driver_input_with_yaw, minimum_radius_m, nearest_se
 use my_physics::controls::AidSensors;
 use my_physics::road::RoadCell;
 use my_physics::tire::{TireFailure, TireState};
+use my_physics::vehicle::Vehicle;
 use my_physics::{
     ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverAids, DriverInput, KeyboardSteeringAssist, MagicFormulaTire,
     PhysicsWorld, Quat, SimulationConfig, Snapshot, StepError, TireInput, TireModel, VehicleDefinition,
@@ -268,6 +269,86 @@ fn invalid_variable_steps_are_rejected() {
 }
 
 #[test]
+fn consecutive_variable_twenty_millisecond_steps_match_one_kilohertz_internal_integration() {
+    let mut reference = PhysicsWorld::new(SimulationConfig::default());
+    reference.add_vehicle(VehicleDefinition::default());
+    reference.set_input_unrecorded(0, DriverInput { throttle: 0.8, steering: 0.08, ..DriverInput::default() }).unwrap();
+    let mut variable = reference.clone();
+
+    reference.step_fixed(20).unwrap();
+    variable.step_variable(0.020).unwrap();
+    let second_input = DriverInput { throttle: 0.65, steering: -0.04, ..DriverInput::default() };
+    reference.set_input_unrecorded(0, second_input).unwrap();
+    variable.set_input_unrecorded(0, second_input).unwrap();
+    reference.step_fixed(20).unwrap();
+    variable.step_variable(0.020).unwrap();
+
+    assert_eq!(variable.time_s, reference.time_s);
+    assert_eq!(variable.vehicles, reference.vehicles);
+    assert_eq!(variable.road, reference.road);
+    assert_eq!(reference.step_index, 40);
+    assert_eq!(variable.step_index, 2, "each variable application step remains one recorded input step");
+
+    let mut history = PhysicsWorld::new(SimulationConfig::default());
+    history.add_vehicle(VehicleDefinition::default());
+    history.set_input(0, DriverInput { throttle: 0.2, ..DriverInput::default() }).unwrap();
+    history.step_variable(0.020).unwrap();
+    history.set_input(0, DriverInput { throttle: 0.4, ..DriverInput::default() }).unwrap();
+    assert_eq!(history.recorded_inputs.iter().map(|frame| frame.step).collect::<Vec<_>>(), [0, 1]);
+}
+
+#[test]
+fn repeated_twenty_millisecond_variable_steps_converge_to_five_second_reference() {
+    let mut definition = VehicleDefinition::default();
+    definition.transmission.automatic = false;
+    let mut reference = PhysicsWorld::new(SimulationConfig::default());
+    reference.add_vehicle(definition);
+    reference.vehicles[0].state.powertrain.gear = 0;
+    reference.vehicles[0].driver_aids.stability_control_enabled = false;
+    reference.vehicles[0].driver_aids.traction_control_enabled = false;
+    reference.step_fixed(2_000).unwrap();
+    {
+        let vehicle = &mut reference.vehicles[0];
+        vehicle.state.linear_velocity_mps = my_physics::Vec3::new(0.0, 0.0, -20.0);
+        for (wheel, wheel_definition) in vehicle.state.wheels.iter_mut().zip(vehicle.definition.wheels.iter()) {
+            wheel.angular_velocity_rad_s = 20.0 / wheel_definition.radius_m;
+        }
+    }
+    reference.set_input_unrecorded(0, DriverInput { steering: 0.02, ..DriverInput::default() }).unwrap();
+    let mut variable = reference.clone();
+
+    reference.step_fixed(5_000).unwrap();
+    for _ in 0..250 {
+        variable.step_variable(0.020).unwrap();
+    }
+
+    assert_eq!(variable.time_s, reference.time_s);
+    assert_eq!(variable.vehicles, reference.vehicles);
+    assert_eq!(variable.road, reference.road);
+
+    let mut fixed_one_ms = PhysicsWorld::demo(1);
+    fixed_one_ms.static_colliders.clear();
+    let mut variable_one_ms = fixed_one_ms.clone();
+    fixed_one_ms.step_fixed(1).unwrap();
+    variable_one_ms.step_variable(0.001).unwrap();
+    assert_eq!(fixed_one_ms.state_fingerprint(), variable_one_ms.state_fingerprint());
+}
+
+#[test]
+fn fingerprint_changes_for_thermal_and_brake_state() {
+    let world = PhysicsWorld::demo(1);
+    let baseline = world.state_fingerprint();
+
+    let mut engine_changed = world.clone();
+    engine_changed.vehicles[0].state.powertrain.engine_temperature_k += 75.0;
+    assert_ne!(engine_changed.state_fingerprint(), baseline);
+
+    let mut brake_changed = world;
+    brake_changed.vehicles[0].state.wheels[0].brake_temperature_k += 400.0;
+    assert_ne!(brake_changed.state_fingerprint(), baseline);
+}
+
+#[test]
 fn render_clock_is_not_part_of_physics() {
     let mut a = PhysicsWorld::demo(1);
     let mut b = a.clone();
@@ -298,6 +379,55 @@ fn fuel_mass_moves_the_center_of_gravity() {
     w.vehicles[0].state.powertrain.fuel_kg = 0.0;
     assert!(w.vehicles[0].mass_kg() < full_mass);
     assert_ne!(w.vehicles[0].cg_local_m(), full_cg);
+}
+
+#[test]
+fn idling_engine_consumes_fuel_for_internal_friction() {
+    let mut vehicle = Vehicle::new(VehicleDefinition::default());
+    vehicle.state.powertrain.gear = 0;
+    let fuel_before = vehicle.state.powertrain.fuel_kg;
+
+    for _ in 0..60_000 {
+        vehicle.update_powertrain(0.001);
+    }
+
+    let fuel_used = fuel_before - vehicle.state.powertrain.fuel_kg;
+    assert!((0.005..0.007).contains(&fuel_used), "fuel_used={fuel_used}");
+    assert!((vehicle.state.powertrain.engine_rpm - vehicle.definition.engine.idle_rpm).abs() < 1.0e-9);
+
+    vehicle.state.powertrain.fuel_kg = 0.0;
+    let temperature_before = vehicle.state.powertrain.engine_temperature_k;
+    for _ in 0..1_000 {
+        vehicle.update_powertrain(0.001);
+    }
+    assert!(vehicle.state.powertrain.engine_rpm < vehicle.definition.engine.idle_rpm);
+    assert!(vehicle.state.powertrain.engine_temperature_k < temperature_before);
+}
+
+#[test]
+fn idling_engine_warms_from_cold_and_cools_from_overheat_to_a_finite_equilibrium() {
+    let run = |initial_temperature_k| {
+        let mut vehicle = Vehicle::new(VehicleDefinition::default());
+        vehicle.state.powertrain.gear = 0;
+        vehicle.state.powertrain.engine_temperature_k = initial_temperature_k;
+        vehicle.state.powertrain.coolant_temperature_k = initial_temperature_k;
+        vehicle.state.powertrain.oil_temperature_k = initial_temperature_k;
+        for _ in 0..1_200_000 {
+            vehicle.update_powertrain(0.001);
+        }
+        vehicle.state.powertrain
+    };
+
+    let cold = run(293.15);
+    let hot = run(430.0);
+    for state in [cold, hot] {
+        assert!((350.0..410.0).contains(&state.engine_temperature_k));
+        assert!((350.0..380.0).contains(&state.coolant_temperature_k));
+        assert!((340.0..395.0).contains(&state.oil_temperature_k));
+    }
+    assert!(cold.engine_temperature_k > 293.15);
+    assert!(hot.engine_temperature_k < 430.0);
+    assert!((cold.engine_temperature_k - hot.engine_temperature_k).abs() < 1.0);
 }
 
 #[test]
