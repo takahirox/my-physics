@@ -5,6 +5,7 @@ cd "$repository_dir"
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
+cargo run --release --bin maneuver-validation -- --summary
 node --check web/demo.js
 node --check web/visual-config.mjs
 node --check web/input-config.mjs
