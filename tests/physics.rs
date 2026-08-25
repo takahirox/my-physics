@@ -335,6 +335,24 @@ fn repeated_twenty_millisecond_variable_steps_converge_to_five_second_reference(
 }
 
 #[test]
+fn variable_substeps_preserve_automatic_shift_timing_and_acceleration() {
+    let mut fixed = PhysicsWorld::new(SimulationConfig::default());
+    fixed.add_vehicle(VehicleDefinition::default());
+    fixed.set_input_unrecorded(0, DriverInput { throttle: 1.0, ..DriverInput::default() }).unwrap();
+    let mut variable = fixed.clone();
+
+    fixed.step_fixed(5_000).unwrap();
+    for _ in 0..250 {
+        variable.step_variable(0.020).unwrap();
+    }
+
+    assert_eq!(variable.time_s, fixed.time_s);
+    assert_eq!(variable.vehicles, fixed.vehicles);
+    assert_eq!(variable.road, fixed.road);
+    assert_eq!(variable.vehicles[0].state.powertrain.gear, 3);
+}
+
+#[test]
 fn fingerprint_changes_for_thermal_and_brake_state() {
     let world = PhysicsWorld::demo(1);
     let baseline = world.state_fingerprint();
