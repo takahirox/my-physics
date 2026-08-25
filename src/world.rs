@@ -342,29 +342,79 @@ impl PhysicsWorld {
                 let va = &mut left[a];
                 let vb = &mut right[0];
                 let delta = vb.state.position_m - va.state.position_m;
-                if delta.y.abs() < 1.8
-                    && let Some((normal, penetration)) = oriented_box_contact(
+                let half_a = va.collision_half_extents_m();
+                let half_b = vb.collision_half_extents_m();
+                let broadphase_radius = half_a.length() + half_b.length();
+                if delta.length_squared() <= broadphase_radius * broadphase_radius
+                    && let Some(contact) = oriented_box_contact(
                         va.state.position_m,
                         va.state.orientation,
-                        va.collision_half_extents_m(),
+                        half_a,
                         vb.state.position_m,
                         vb.state.orientation,
-                        vb.collision_half_extents_m(),
+                        half_b,
                     )
                 {
-                    let rel = (vb.state.linear_velocity_mps - va.state.linear_velocity_mps).dot(normal);
+                    let normal = contact.normal;
+                    let r_a = contact.point_m - va.state.position_m;
+                    let r_b = contact.point_m - vb.state.position_m;
+                    let velocity_a = va.state.linear_velocity_mps + va.state.angular_velocity_rad_s.cross(r_a);
+                    let velocity_b = vb.state.linear_velocity_mps + vb.state.angular_velocity_rad_s.cross(r_b);
+                    let rel = (velocity_b - velocity_a).dot(normal);
                     let inv_a = 1.0 / va.mass_kg();
                     let inv_b = 1.0 / vb.mass_kg();
                     if rel < 0.0 {
-                        let impulse = -(1.0 + 0.18) * rel / (inv_a + inv_b);
-                        va.state.linear_velocity_mps -= normal * (impulse * inv_a);
-                        vb.state.linear_velocity_mps += normal * (impulse * inv_b);
+                        let angular_a =
+                            inverse_inertia_world(va.state.orientation, va.inertia_kg_m2(), r_a.cross(normal))
+                                .cross(r_a);
+                        let angular_b =
+                            inverse_inertia_world(vb.state.orientation, vb.inertia_kg_m2(), r_b.cross(normal))
+                                .cross(r_b);
+                        let effective_inverse_mass = inv_a + inv_b + normal.dot(angular_a + angular_b);
+                        let impulse = -(1.0 + 0.18) * rel / effective_inverse_mass.max(1.0e-12);
+                        let impulse_world = normal * impulse;
+                        va.state.linear_velocity_mps -= impulse_world * inv_a;
+                        vb.state.linear_velocity_mps += impulse_world * inv_b;
+                        va.state.angular_velocity_rad_s -=
+                            inverse_inertia_world(va.state.orientation, va.inertia_kg_m2(), r_a.cross(impulse_world));
+                        vb.state.angular_velocity_rad_s +=
+                            inverse_inertia_world(vb.state.orientation, vb.inertia_kg_m2(), r_b.cross(impulse_world));
                         let energy = 0.5 * impulse * (-rel);
                         apply_impact_damage(va, energy, -normal);
                         apply_impact_damage(vb, energy, normal);
+
+                        // Damage can change both inertia tensors. Apply the
+                        // small corrective impulse required to retain the
+                        // requested contact-point coefficient of restitution.
+                        let velocity_a = va.state.linear_velocity_mps + va.state.angular_velocity_rad_s.cross(r_a);
+                        let velocity_b = vb.state.linear_velocity_mps + vb.state.angular_velocity_rad_s.cross(r_b);
+                        let current_relative_speed = (velocity_b - velocity_a).dot(normal);
+                        let target_relative_speed = -0.18 * rel;
+                        let angular_a =
+                            inverse_inertia_world(va.state.orientation, va.inertia_kg_m2(), r_a.cross(normal))
+                                .cross(r_a);
+                        let angular_b =
+                            inverse_inertia_world(vb.state.orientation, vb.inertia_kg_m2(), r_b.cross(normal))
+                                .cross(r_b);
+                        let corrected_inverse_mass = inv_a + inv_b + normal.dot(angular_a + angular_b);
+                        let correction_impulse =
+                            normal * ((target_relative_speed - current_relative_speed) / corrected_inverse_mass);
+                        va.state.linear_velocity_mps -= correction_impulse * inv_a;
+                        vb.state.linear_velocity_mps += correction_impulse * inv_b;
+                        va.state.angular_velocity_rad_s -= inverse_inertia_world(
+                            va.state.orientation,
+                            va.inertia_kg_m2(),
+                            r_a.cross(correction_impulse),
+                        );
+                        vb.state.angular_velocity_rad_s += inverse_inertia_world(
+                            vb.state.orientation,
+                            vb.inertia_kg_m2(),
+                            r_b.cross(correction_impulse),
+                        );
                     }
-                    va.state.position_m -= normal * (penetration * 0.5);
-                    vb.state.position_m += normal * (penetration * 0.5);
+                    let correction = contact.penetration_m / (inv_a + inv_b).max(1.0e-12);
+                    va.state.position_m -= normal * (correction * inv_a);
+                    vb.state.position_m += normal * (correction * inv_b);
                 }
             }
         }
@@ -374,21 +424,50 @@ impl PhysicsWorld {
             for c in &self.static_colliders {
                 let delta = c.position_m - v.state.position_m;
                 let broadphase_radius = c.shape.bounding_radius() + v.collision_half_extents_m().length() + 0.5;
-                if delta.x * delta.x + delta.z * delta.z > broadphase_radius * broadphase_radius {
+                if delta.length_squared() > broadphase_radius * broadphase_radius {
                     continue;
                 }
-                if let Some((normal, penetration)) =
+                if let Some(contact) =
                     vehicle_static_contact(v.state.position_m, v.state.orientation, v.collision_half_extents_m(), c)
                 {
-                    let vn = v.state.linear_velocity_mps.dot(normal);
+                    let normal = contact.normal;
+                    let r = contact.point_m - v.state.position_m;
+                    let contact_velocity = v.state.linear_velocity_mps + v.state.angular_velocity_rad_s.cross(r);
+                    let vn = contact_velocity.dot(normal);
                     if vn < 0.0 {
                         let speed = -vn;
-                        v.state.linear_velocity_mps -= normal * ((1.0 + c.restitution) * vn);
-                        let tangent = v.state.linear_velocity_mps - normal * v.state.linear_velocity_mps.dot(normal);
-                        v.state.linear_velocity_mps -= tangent * c.friction.clamp(0.0, 1.0) * 0.08;
-                        apply_impact_damage(v, 0.5 * v.mass_kg() * speed * speed, normal);
+                        let inverse_mass = 1.0 / v.mass_kg();
+                        let inertia = v.inertia_kg_m2();
+                        let angular = inverse_inertia_world(v.state.orientation, inertia, r.cross(normal)).cross(r);
+                        let normal_impulse_magnitude =
+                            -(1.0 + c.restitution) * vn / (inverse_mass + normal.dot(angular)).max(1.0e-12);
+                        let normal_impulse = normal * normal_impulse_magnitude;
+                        apply_impulse(v, normal_impulse, r);
+                        apply_impact_damage(v, 0.5 * normal_impulse_magnitude * speed, normal);
+
+                        let after_damage = v.state.linear_velocity_mps + v.state.angular_velocity_rad_s.cross(r);
+                        let current_normal_speed = after_damage.dot(normal);
+                        let target_normal_speed = -c.restitution * vn;
+                        let corrected_inertia = v.inertia_kg_m2();
+                        let corrected_angular =
+                            inverse_inertia_world(v.state.orientation, corrected_inertia, r.cross(normal)).cross(r);
+                        let correction_magnitude = (target_normal_speed - current_normal_speed)
+                            / (inverse_mass + normal.dot(corrected_angular)).max(1.0e-12);
+                        apply_impulse(v, normal * correction_magnitude, r);
+
+                        let after_normal = v.state.linear_velocity_mps + v.state.angular_velocity_rad_s.cross(r);
+                        let tangent_velocity = after_normal - normal * after_normal.dot(normal);
+                        if tangent_velocity.length_squared() > 1.0e-12 {
+                            let tangent = tangent_velocity.normalized();
+                            let tangent_angular =
+                                inverse_inertia_world(v.state.orientation, inertia, r.cross(tangent)).cross(r);
+                            let unconstrained =
+                                -tangent_velocity.length() / (inverse_mass + tangent.dot(tangent_angular)).max(1.0e-12);
+                            let friction_limit = c.friction.clamp(0.0, 1.5) * normal_impulse_magnitude;
+                            apply_impulse(v, tangent * unconstrained.max(-friction_limit), r);
+                        }
                     }
-                    v.state.position_m += normal * penetration;
+                    v.state.position_m += normal * contact.penetration_m;
                 }
             }
         }
@@ -558,11 +637,15 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
     let accel = v.cached_force / mass;
     semi_implicit_linear_step(&mut v.state.position_m, &mut v.state.linear_velocity_mps, accel, dt);
     let inertia = v.inertia_kg_m2();
-    let angular_accel =
-        Vec3::new(v.cached_torque.x / inertia.x, v.cached_torque.y / inertia.y, v.cached_torque.z / inertia.z);
-    v.state.angular_velocity_rad_s += angular_accel * dt;
-    v.state.angular_velocity_rad_s *= 1.0 - 0.02 * dt;
-    v.state.orientation = v.state.orientation.integrate_world_angular_velocity(v.state.angular_velocity_rad_s, dt);
+    let (orientation, angular_velocity) = integrate_rigid_body_rotation(
+        v.state.orientation,
+        v.state.angular_velocity_rad_s,
+        v.cached_torque,
+        inertia,
+        dt,
+    );
+    v.state.orientation = orientation;
+    v.state.angular_velocity_rad_s = angular_velocity;
     if v.state.position_m.y < 0.18 {
         let impact = (-v.state.linear_velocity_mps.y).max(0.0);
         v.state.position_m.y = 0.18;
@@ -575,7 +658,51 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
     v.update_telemetry((v.state.linear_velocity_mps - old_velocity) / dt);
 }
 
+fn inertia_world(orientation: Quat, inertia_body: Vec3, vector_world: Vec3) -> Vec3 {
+    let body = orientation.conjugate().rotate(vector_world);
+    orientation.rotate(Vec3::new(body.x * inertia_body.x, body.y * inertia_body.y, body.z * inertia_body.z))
+}
+
+fn inverse_inertia_world(orientation: Quat, inertia_body: Vec3, vector_world: Vec3) -> Vec3 {
+    let body = orientation.conjugate().rotate(vector_world);
+    orientation.rotate(Vec3::new(
+        body.x / inertia_body.x.max(1.0e-12),
+        body.y / inertia_body.y.max(1.0e-12),
+        body.z / inertia_body.z.max(1.0e-12),
+    ))
+}
+
+/// Integrates world angular momentum and derives angular velocity from the
+/// rotated body inertia. This is Euler's rigid-body equation in world form:
+/// `d(I_world * omega)/dt = torque_world`. Reconstructing omega after the
+/// orientation update keeps torque-free world angular momentum conserved.
+fn integrate_rigid_body_rotation(
+    orientation: Quat,
+    angular_velocity_world: Vec3,
+    torque_world: Vec3,
+    inertia_body: Vec3,
+    dt: f64,
+) -> (Quat, Vec3) {
+    let angular_momentum = inertia_world(orientation, inertia_body, angular_velocity_world) + torque_world * dt;
+    let omega_start = inverse_inertia_world(orientation, inertia_body, angular_momentum);
+    let predicted_orientation = orientation.integrate_world_angular_velocity(omega_start, dt);
+    let omega_end = inverse_inertia_world(predicted_orientation, inertia_body, angular_momentum);
+    let midpoint_omega = (omega_start + omega_end) * 0.5;
+    let next_orientation = orientation.integrate_world_angular_velocity(midpoint_omega, dt);
+    let next_omega = inverse_inertia_world(next_orientation, inertia_body, angular_momentum);
+    (next_orientation, next_omega)
+}
+
+fn apply_impulse(vehicle: &mut Vehicle, impulse_world: Vec3, r_world: Vec3) {
+    vehicle.state.linear_velocity_mps += impulse_world / vehicle.mass_kg();
+    vehicle.state.angular_velocity_rad_s +=
+        inverse_inertia_world(vehicle.state.orientation, vehicle.inertia_kg_m2(), r_world.cross(impulse_world));
+}
+
 fn apply_impact_damage(v: &mut Vehicle, energy_j: f64, normal_world: Vec3) {
+    // Deformation changes the inertia tensor. Preserve the angular momentum
+    // delivered by the impact across that instantaneous tensor change.
+    let angular_momentum = inertia_world(v.state.orientation, v.inertia_kg_m2(), v.state.angular_velocity_rad_s);
     let severity = (energy_j / 220_000.0).clamp(0.0, 0.35);
     v.audio.impact = (v.audio.impact + severity * 3.0).clamp(0.0, 1.0);
     v.force_feedback.impact = (v.force_feedback.impact + severity * 4.0).clamp(0.0, 1.0);
@@ -596,6 +723,7 @@ fn apply_impact_damage(v: &mut Vehicle, energy_j: f64, normal_world: Vec3) {
         v.state.damage.suspension[wheel] = (v.state.damage.suspension[wheel] + severity).clamp(0.0, 1.0);
         v.state.wheels[wheel].wheel_damage = (v.state.wheels[wheel].wheel_damage + severity).clamp(0.0, 1.0);
     }
+    v.state.angular_velocity_rad_s = inverse_inertia_world(v.state.orientation, v.inertia_kg_m2(), angular_momentum);
 }
 
 fn fingerprint_snapshot(s: &Snapshot) -> u64 {

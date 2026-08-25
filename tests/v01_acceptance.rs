@@ -216,6 +216,178 @@ fn vehicle_collision_conserves_planar_momentum_within_external_force_tolerance()
     assert!((after - before).abs() < 30.0, "before={before}, after={after}");
 }
 
+fn world_angular_momentum(vehicle: &my_physics::vehicle::Vehicle) -> Vec3 {
+    let orientation = vehicle.state.orientation;
+    let omega_body = orientation.conjugate().rotate(vehicle.state.angular_velocity_rad_s);
+    let inertia = vehicle.inertia_kg_m2();
+    let spin =
+        orientation.rotate(Vec3::new(inertia.x * omega_body.x, inertia.y * omega_body.y, inertia.z * omega_body.z));
+    spin + vehicle.state.position_m.cross(vehicle.state.linear_velocity_mps * vehicle.mass_kg())
+}
+
+fn rotational_energy(vehicle: &my_physics::vehicle::Vehicle) -> f64 {
+    let orientation = vehicle.state.orientation;
+    let omega = vehicle.state.angular_velocity_rad_s;
+    let omega_body = orientation.conjugate().rotate(omega);
+    let inertia = vehicle.inertia_kg_m2();
+    0.5 * (inertia.x * omega_body.x * omega_body.x
+        + inertia.y * omega_body.y * omega_body.y
+        + inertia.z * omega_body.z * omega_body.z)
+}
+
+fn contact_velocity(vehicle: &my_physics::vehicle::Vehicle, point_m: Vec3) -> Vec3 {
+    vehicle.state.linear_velocity_mps + vehicle.state.angular_velocity_rad_s.cross(point_m - vehicle.state.position_m)
+}
+
+#[test]
+fn torque_free_asymmetric_rigid_body_conserves_world_angular_momentum() {
+    let mut world = PhysicsWorld::demo(1);
+    world.static_colliders.clear();
+    world.config.gravity_mps2 = 0.0;
+    let vehicle = &mut world.vehicles[0];
+    vehicle.definition.chassis.drag_coefficient = 0.0;
+    vehicle.definition.chassis.lift_coefficient = 0.0;
+    vehicle.state.position_m = Vec3::new(0.0, 100.0, 0.0);
+    vehicle.state.linear_velocity_mps = Vec3::ZERO;
+    vehicle.state.orientation = Quat::from_axis_angle(Vec3::new(0.3, 0.8, -0.2), 0.7);
+    vehicle.state.angular_velocity_rad_s = Vec3::new(1.0, 2.0, 0.4);
+
+    let momentum_before = world_angular_momentum(&world.vehicles[0]);
+    let energy_before = rotational_energy(&world.vehicles[0]);
+    world.step_fixed(10_000).unwrap();
+    let momentum_after = world_angular_momentum(&world.vehicles[0]);
+    let energy_after = rotational_energy(&world.vehicles[0]);
+
+    let momentum_relative_error = (momentum_after - momentum_before).length() / momentum_before.length().max(1.0e-12);
+    let energy_relative_error = (energy_after - energy_before).abs() / energy_before;
+    assert!(momentum_relative_error < 1.0e-10, "angular momentum error={momentum_relative_error:e}");
+    assert!(energy_relative_error < 2.0e-5, "rotational energy error={energy_relative_error:e}");
+}
+
+#[test]
+fn principal_axis_free_rotation_has_no_artificial_decay() {
+    let mut world = PhysicsWorld::demo(1);
+    world.static_colliders.clear();
+    world.config.gravity_mps2 = 0.0;
+    let vehicle = &mut world.vehicles[0];
+    vehicle.definition.chassis.drag_coefficient = 0.0;
+    vehicle.definition.chassis.lift_coefficient = 0.0;
+    vehicle.state.position_m = Vec3::new(0.0, 100.0, 0.0);
+    vehicle.state.orientation = Quat::from_axis_angle(Vec3::new(-0.4, 0.2, 0.7), 1.1);
+    let initial_axis_world = vehicle.state.orientation.rotate(Vec3::Y);
+    vehicle.state.angular_velocity_rad_s = initial_axis_world * 2.5;
+    let momentum_before = world_angular_momentum(vehicle);
+    let energy_before = rotational_energy(vehicle);
+
+    world.step_fixed(10_000).unwrap();
+
+    let vehicle = &world.vehicles[0];
+    let momentum_error = (world_angular_momentum(vehicle) - momentum_before).length() / momentum_before.length();
+    let energy_error = (rotational_energy(vehicle) - energy_before).abs() / energy_before;
+    let omega_error = (vehicle.state.angular_velocity_rad_s - initial_axis_world * 2.5).length();
+    assert!(momentum_error < 1.0e-10, "angular momentum error={momentum_error:e}");
+    assert!(energy_error < 1.0e-10, "energy error={energy_error:e}");
+    assert!(omega_error < 1.0e-8, "angular velocity error={omega_error:e}");
+}
+
+#[test]
+fn torque_free_rotation_is_covariant_under_world_frame_rotation() {
+    let mut first = PhysicsWorld::demo(1);
+    first.static_colliders.clear();
+    first.config.gravity_mps2 = 0.0;
+    first.vehicles[0].definition.chassis.drag_coefficient = 0.0;
+    first.vehicles[0].definition.chassis.lift_coefficient = 0.0;
+    first.vehicles[0].state.position_m = Vec3::new(0.0, 100.0, 0.0);
+    first.vehicles[0].state.orientation = Quat::from_axis_angle(Vec3::new(0.2, 0.9, -0.3), 0.8);
+    first.vehicles[0].state.angular_velocity_rad_s = Vec3::new(1.1, -0.7, 2.0);
+
+    let world_rotation = Quat::from_axis_angle(Vec3::new(-0.5, 0.4, 0.6), 1.2);
+    let mut rotated = first.clone();
+    rotated.vehicles[0].state.orientation = world_rotation * first.vehicles[0].state.orientation;
+    rotated.vehicles[0].state.angular_velocity_rad_s =
+        world_rotation.rotate(first.vehicles[0].state.angular_velocity_rad_s);
+
+    first.step_fixed(4_000).unwrap();
+    rotated.step_fixed(4_000).unwrap();
+
+    let expected_omega = world_rotation.rotate(first.vehicles[0].state.angular_velocity_rad_s);
+    assert!((rotated.vehicles[0].state.angular_velocity_rad_s - expected_omega).length() < 2.0e-10);
+    for basis in [Vec3::X, Vec3::Y, Vec3::FORWARD] {
+        let expected = world_rotation.rotate(first.vehicles[0].state.orientation.rotate(basis));
+        let actual = rotated.vehicles[0].state.orientation.rotate(basis);
+        assert!((actual - expected).length() < 2.0e-10);
+    }
+}
+
+#[test]
+fn offset_vehicle_impact_generates_yaw_and_conserves_planar_angular_momentum() {
+    let mut world = PhysicsWorld::demo(2);
+    world.static_colliders.clear();
+    world.config.gravity_mps2 = 0.0;
+    world.config.automatic_lod = false;
+    for vehicle in &mut world.vehicles {
+        vehicle.definition.chassis.drag_coefficient = 0.0;
+        vehicle.definition.chassis.lift_coefficient = 0.0;
+        vehicle.state.position_m.y = 100.0;
+        vehicle.state.orientation = Quat::IDENTITY;
+        vehicle.state.angular_velocity_rad_s = Vec3::ZERO;
+    }
+    world.vehicles[0].state.position_m.x = -0.5;
+    world.vehicles[0].state.position_m.z = 0.0;
+    world.vehicles[1].state.position_m.x = 0.5;
+    world.vehicles[1].state.position_m.z = -3.5;
+    world.vehicles[0].state.linear_velocity_mps.z = -10.0;
+    world.vehicles[1].state.linear_velocity_mps.z = 10.0;
+
+    let before = world.vehicles.iter().map(world_angular_momentum).fold(Vec3::ZERO, |sum, value| sum + value);
+    let impact_point = Vec3::new(0.0, 100.0, -1.75);
+    let normal = Vec3::FORWARD;
+    let relative_speed_before =
+        (world.vehicles[1].state.linear_velocity_mps - world.vehicles[0].state.linear_velocity_mps).dot(normal);
+    world.step_fixed(1).unwrap();
+    let after = world.vehicles.iter().map(world_angular_momentum).fold(Vec3::ZERO, |sum, value| sum + value);
+    let yaw_a = world.vehicles[0].state.angular_velocity_rad_s.y;
+    let yaw_b = world.vehicles[1].state.angular_velocity_rad_s.y;
+
+    assert!(yaw_a.abs() > 0.1, "first vehicle yaw rate={yaw_a}");
+    assert!(yaw_b.abs() > 0.1, "second vehicle yaw rate={yaw_b}");
+    assert!((after.y - before.y).abs() < 1.0e-8, "before Ly={}, after Ly={}", before.y, after.y);
+    let relative_speed_after = (contact_velocity(&world.vehicles[1], impact_point)
+        - contact_velocity(&world.vehicles[0], impact_point))
+    .dot(normal);
+    let restitution = relative_speed_after / -relative_speed_before;
+    assert!((restitution - 0.18).abs() < 1.0e-10, "restitution={restitution}");
+}
+
+#[test]
+fn offset_static_wall_impact_applies_angular_impulse() {
+    let mut world = collision_world(
+        CollisionShape::Box { half_extents_m: Vec3::new(2.0, 1.0, 0.4) },
+        Vec3::new(0.0, 100.0, -2.3),
+        Quat::IDENTITY,
+    );
+    world.config.gravity_mps2 = 0.0;
+    world.static_colliders[0].friction = 0.0;
+    let vehicle = &mut world.vehicles[0];
+    vehicle.definition.chassis.drag_coefficient = 0.0;
+    vehicle.definition.chassis.lift_coefficient = 0.0;
+    vehicle.state.position_m = Vec3::new(2.4, 100.0, 0.0);
+    vehicle.state.linear_velocity_mps = Vec3::new(0.0, 0.0, -10.0);
+    vehicle.state.angular_velocity_rad_s = Vec3::ZERO;
+
+    let impact_point = Vec3::new(1.2, 100.0, -2.03);
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let normal_speed_before = vehicle.state.linear_velocity_mps.dot(normal);
+    world.step_fixed(1).unwrap();
+
+    let yaw_rate = world.vehicles[0].state.angular_velocity_rad_s.y;
+    assert!(yaw_rate.abs() > 0.1, "yaw rate={yaw_rate}");
+    assert!(world.vehicles[0].state.damage.body > 0.0);
+    let normal_speed_after = contact_velocity(&world.vehicles[0], impact_point).dot(normal);
+    let restitution = normal_speed_after / -normal_speed_before;
+    assert!((restitution - 0.1).abs() < 1.0e-10, "restitution={restitution}");
+}
+
 #[test]
 fn reference_braking_distance_is_finite_and_plausible() {
     let mut world = PhysicsWorld::demo(1);

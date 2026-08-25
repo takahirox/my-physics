@@ -39,6 +39,16 @@ pub struct DetachedBody {
     pub damage: f64,
 }
 
+/// Geometric contact returned by the deterministic narrow phase. `normal`
+/// points from shape A (the first argument) toward shape B, and `point_m` is
+/// the world-space point at which the impulse is applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Contact {
+    pub normal: Vec3,
+    pub penetration_m: f64,
+    pub point_m: Vec3,
+}
+
 pub(crate) fn oriented_box_contact(
     position_a: Vec3,
     orientation_a: Quat,
@@ -46,22 +56,27 @@ pub(crate) fn oriented_box_contact(
     position_b: Vec3,
     orientation_b: Quat,
     half_b: Vec3,
-) -> Option<(Vec3, f64)> {
-    if (position_b.y - position_a.y).abs() > half_a.y + half_b.y {
-        return None;
-    }
-    let right_a = orientation_a.rotate(Vec3::X);
-    let forward_a = orientation_a.rotate(Vec3::FORWARD);
-    let right_b = orientation_b.rotate(Vec3::X);
-    let forward_b = orientation_b.rotate(Vec3::FORWARD);
-    let axes = [right_a, forward_a, right_b, forward_b];
+) -> Option<Contact> {
+    let axes_a = box_axes(orientation_a);
+    let axes_b = box_axes(orientation_b);
     let delta = position_b - position_a;
     let mut least_overlap = f64::INFINITY;
     let mut normal = Vec3::ZERO;
-    for raw_axis in axes {
-        let axis = Vec3::new(raw_axis.x, 0.0, raw_axis.z).normalized();
-        let radius_a = half_a.x * right_a.dot(axis).abs() + half_a.z * forward_a.dot(axis).abs();
-        let radius_b = half_b.x * right_b.dot(axis).abs() + half_b.z * forward_b.dot(axis).abs();
+    let mut candidate_axes = Vec::with_capacity(15);
+    candidate_axes.extend(axes_a);
+    candidate_axes.extend(axes_b);
+    for axis_a in axes_a {
+        for axis_b in axes_b {
+            candidate_axes.push(axis_a.cross(axis_b));
+        }
+    }
+    for raw_axis in candidate_axes {
+        if raw_axis.length_squared() < 1.0e-12 {
+            continue;
+        }
+        let axis = raw_axis.normalized();
+        let radius_a = box_projection_radius(axes_a, half_a, axis);
+        let radius_b = box_projection_radius(axes_b, half_b, axis);
         let signed_distance = delta.dot(axis);
         let overlap = radius_a + radius_b - signed_distance.abs();
         if overlap <= 0.0 {
@@ -69,10 +84,15 @@ pub(crate) fn oriented_box_contact(
         }
         if overlap < least_overlap {
             least_overlap = overlap;
-            normal = axis * signed_distance.signum();
+            normal = axis * if signed_distance >= 0.0 { 1.0 } else { -1.0 };
         }
     }
-    Some((normal, least_overlap))
+    if normal.length_squared() < 0.5 {
+        return None;
+    }
+    let point_a = box_support(position_a, orientation_a, half_a, normal);
+    let point_b = box_support(position_b, orientation_b, half_b, -normal);
+    Some(Contact { normal, penetration_m: least_overlap, point_m: (point_a + point_b) * 0.5 })
 }
 
 pub(crate) fn vehicle_static_contact(
@@ -80,7 +100,7 @@ pub(crate) fn vehicle_static_contact(
     vehicle_orientation: Quat,
     vehicle_half: Vec3,
     collider: &StaticCollider,
-) -> Option<(Vec3, f64)> {
+) -> Option<Contact> {
     match &collider.shape {
         CollisionShape::Box { half_extents_m } => oriented_box_contact(
             collider.position_m,
@@ -108,7 +128,7 @@ fn circle_box_contact(
     box_position: Vec3,
     box_orientation: Quat,
     box_half: Vec3,
-) -> Option<(Vec3, f64)> {
+) -> Option<Contact> {
     if (circle_center.y - box_position.y).abs() > box_half.y + radius {
         return None;
     }
@@ -127,7 +147,10 @@ fn circle_box_contact(
         let dz = box_half.z - local.z.abs();
         if dx < dz { Vec3::new(-local.x.signum(), 0.0, 0.0) } else { Vec3::new(0.0, 0.0, -local.z.signum()) }
     };
-    Some((box_orientation.rotate(local_normal), radius - distance))
+    let normal = box_orientation.rotate(local_normal).normalized();
+    let box_point = box_position + box_orientation.rotate(closest);
+    let circle_point = circle_center + normal * radius;
+    Some(Contact { normal, penetration_m: radius - distance, point_m: (box_point + circle_point) * 0.5 })
 }
 
 fn convex_box_contact(
@@ -136,7 +159,7 @@ fn convex_box_contact(
     box_position: Vec3,
     box_orientation: Quat,
     box_half: Vec3,
-) -> Option<(Vec3, f64)> {
+) -> Option<Contact> {
     if points.len() < 3 {
         return None;
     }
@@ -173,7 +196,37 @@ fn convex_box_contact(
             normal = axis * (center - polygon_center).signum();
         }
     }
-    Some((normal, least_overlap))
+    let polygon_point = support_points(&polygon, normal);
+    let box_point = box_support(box_position, box_orientation, box_half, -normal);
+    Some(Contact { normal, penetration_m: least_overlap, point_m: (polygon_point + box_point) * 0.5 })
+}
+
+fn box_axes(orientation: Quat) -> [Vec3; 3] {
+    [orientation.rotate(Vec3::X), orientation.rotate(Vec3::Y), orientation.rotate(Vec3::new(0.0, 0.0, 1.0))]
+}
+
+fn box_projection_radius(axes: [Vec3; 3], half: Vec3, direction: Vec3) -> f64 {
+    half.x * axes[0].dot(direction).abs()
+        + half.y * axes[1].dot(direction).abs()
+        + half.z * axes[2].dot(direction).abs()
+}
+
+fn support_component(direction: f64, extent: f64) -> f64 {
+    if direction.abs() < 1.0e-12 { 0.0 } else { direction.signum() * extent }
+}
+
+fn box_support(position: Vec3, orientation: Quat, half: Vec3, direction_world: Vec3) -> Vec3 {
+    let local = orientation.conjugate().rotate(direction_world);
+    position
+        + orientation.rotate(Vec3::new(
+            support_component(local.x, half.x),
+            support_component(local.y, half.y),
+            support_component(local.z, half.z),
+        ))
+}
+
+fn support_points(points: &[Vec3], direction: Vec3) -> Vec3 {
+    points.iter().copied().max_by(|a, b| a.dot(direction).total_cmp(&b.dot(direction))).unwrap_or(Vec3::ZERO)
 }
 
 fn project_points(points: &[Vec3], axis: Vec3) -> (f64, f64) {
@@ -185,4 +238,22 @@ fn project_points(points: &[Vec3], axis: Vec3) -> (f64, f64) {
         max = max.max(projection);
     }
     (min, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tilted_boxes_use_full_three_dimensional_sat() {
+        let half = Vec3::new(1.0, 1.0, 1.0);
+        let tilted = Quat::from_axis_angle(Vec3::X, core::f64::consts::FRAC_PI_4);
+        let contact = oriented_box_contact(Vec3::ZERO, tilted, half, Vec3::new(0.0, 2.2, 0.0), Quat::IDENTITY, half)
+            .expect("the tilted upper face extends beyond the unrotated half-height");
+        assert!(contact.normal.y > 0.7);
+
+        assert!(
+            oriented_box_contact(Vec3::ZERO, tilted, half, Vec3::new(0.0, 2.5, 0.0), Quat::IDENTITY, half,).is_none()
+        );
+    }
 }
