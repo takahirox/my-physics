@@ -39,9 +39,17 @@ The deterministic 1 kHz headless fixture currently records: 0–100 km/h in
 3.239 s; 100 km/h to 2 m/s in 26.478 m / 1.789 s; and 1° road-wheel ramp/hold
 heading changes of 4.568°, 8.828° and 11.989° at 50/100/140 km/h. The 100 km/h
 2°/0.5 Hz slalom reaches 0.382 rad/s yaw, 2.924° body slip, retains 84.1% speed
-and reverses yaw seven times. The authored handbrake maneuver reaches 21.26°
-body slip, recovers for a 200 ms stable window after 1.788 s, reverses yaw only
-once and retains 57.7% of its starting speed at the declared 3.5 s endpoint.
+and reverses yaw seven times. The authored handbrake maneuver reaches 18.69°
+body slip, recovers for a 200 ms stable window after 1.386 s without a yaw
+reversal, and retains 60.1% of its starting speed at the declared 3.5 s
+endpoint on arm64 macOS. The same test compiled for x86_64 and run through
+Rosetta reaches 19.05°, recovers after 1.395 s, retains 59.5%, and also has no
+yaw reversal. The acceptance gate is intentionally inside the product limit:
+recovery must complete by 1.6 s, leaving at least 200 ms of margin before the
+1.8 s target. The maneuver uses a prescribed countersteer phase followed by
+rack unwind; continuing to hold opposite lock after alignment is a second
+pendulum steering command, not recovery, and proved sensitive to platform
+libm differences as well as unlike the browser/human input sequence.
 The shared circuit AI also completes a damage-free lap with 2.486 m maximum
 lateral error and 50.8 °C maximum tire temperature in the 110 s fixture.
 

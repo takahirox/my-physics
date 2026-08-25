@@ -126,8 +126,14 @@ fn drift_fixture(handbrake: bool) -> DriftMetrics {
                 (4.0, 0.70, 1.0)
             } else if time < 1.25 {
                 (4.0, 0.70, 0.0)
+            } else if time < 2.40 {
+                // A deliberate fixed countersteer phase represents the driver
+                // catching the slide. Holding opposite lock after the body is
+                // aligned caused a second pendulum turn, so unwind the rack at
+                // a fixed time as a human driver would.
+                (-4.0, 0.70, 0.0)
             } else {
-                (-3.2, 0.70, 0.0)
+                (0.0, 0.70, 0.0)
             }
         } else if time < 0.55 {
             (4.0, 0.55, 0.0)
@@ -178,12 +184,14 @@ fn lift_and_handbrake_create_readable_drift_then_recover() {
     assert!((4.0..=10.0).contains(&lift.peak_sideslip_deg), "lift={lift:?}");
     assert!((18.0..=38.0).contains(&handbrake.peak_sideslip_deg), "handbrake={handbrake:?}");
     let recovery = handbrake.recovery_s.expect("handbrake drift never recovered");
-    assert!((1.0..=1.8).contains(&recovery), "handbrake={handbrake:?}");
-    for result in [lift, handbrake] {
-        assert!(result.peak_sideslip_deg < 75.0, "result={result:?}");
-        assert!(result.speed_retained >= 0.55, "result={result:?}");
-        assert!(result.yaw_reversals <= 1, "result={result:?}");
-    }
+    // Keep 200 ms of margin inside the original 1.8 s product target so small
+    // libm differences cannot leave another architecture on the boundary.
+    assert!((1.0..=1.6).contains(&recovery), "handbrake={handbrake:?}");
+    assert!(handbrake.speed_retained >= 0.58, "handbrake={handbrake:?}");
+    assert_eq!(handbrake.yaw_reversals, 0, "countersteer must recover without a pendulum reversal");
+    assert!(lift.speed_retained >= 0.55, "lift={lift:?}");
+    assert!(lift.yaw_reversals <= 1, "lift={lift:?}");
+    assert!(lift.peak_sideslip_deg < 75.0 && handbrake.peak_sideslip_deg < 75.0);
 }
 
 #[test]
