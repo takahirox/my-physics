@@ -10,7 +10,7 @@ pub const VALIDATION_DISCLAIMER: &str =
     "Physical-plausibility/regression evidence only; not correlation with a measured real vehicle.";
 pub const VALIDATION_VEHICLE_PRESET: &str = "engineering_reference";
 pub const VEHICLE_DEFINITION_REVISION: &str = "vehicle-definition-v0.1";
-pub const VEHICLE_PROVENANCE_REVISION: &str = "provenance-untracked-v0.1";
+pub const VEHICLE_PROVENANCE_REVISION: &str = "engineering-reference-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputProgram {
@@ -330,7 +330,7 @@ pub fn run_scenario(definition: &ScenarioDefinition) -> ScenarioReport {
 
 pub fn run_scenario_with_dt(definition: &ScenarioDefinition, fixed_dt_s: f64) -> ScenarioReport {
     assert!(fixed_dt_s.is_finite() && fixed_dt_s > 0.0 && fixed_dt_s <= 0.001);
-    let mut vehicle_definition = VehicleDefinition::default();
+    let mut vehicle_definition = VehicleDefinition::engineering_reference();
     let is_acceleration = matches!(definition.input, InputProgram::FullThrottle);
     if !is_acceleration {
         vehicle_definition.transmission.automatic = false;
