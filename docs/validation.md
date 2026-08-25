@@ -6,6 +6,53 @@ Run the complete local gate with:
 ./scripts/verify-v01.sh
 ```
 
+## Declarative maneuver harness
+
+The headless maneuver catalog covers coast-down, 0–100 km/h acceleration,
+100–0 km/h ABS braking, steady steer/skidpad, step steer and slalom. Every
+scenario declares its initial condition, deterministic input program, duration,
+sample rate and quantitative acceptance bounds in `src/validation.rs`.
+
+Run the fast summary acceptance used by CI:
+
+```bash
+cargo run --release --bin maneuver-validation -- --summary
+```
+
+Generate reproducible JSON and CSV summary plus time-series artifacts:
+
+```bash
+./scripts/run-maneuver-validation.sh target/maneuver-validation
+```
+
+Time series include speed, yaw rate, vehicle sideslip, acceleration, all four
+wheel longitudinal slips, slip angles and normal loads. The integration suite
+also checks independent-run determinism, left/right steering symmetry,
+aerodynamic speed-squared scaling and fixed-timestep convergence.
+
+These bounds establish regression continuity and physical plausibility only.
+They are **not real-vehicle correlation**: no measured reference telemetry was
+used to set them, and passing them must not be presented as proof that this
+prototype matches a particular car.
+
+The initial acceptance envelopes deliberately surround already-reviewed v0.1
+behavior rather than claiming measured targets:
+
+| Scenario | Quantitative envelope and rationale |
+|---|---|
+| coast-down | 12 s final speed 20.0–27.7 m/s, near-zero sideslip and positive wheel loads; catches missing/explosive resistance without pretending a measured coast curve exists |
+| 0–100 km/h | target reached in 2–15 s with less than 0.03 rad sideslip; catches broken propulsion, shifts or straight-line symmetry |
+| 100–0 km/h | 2 m/s threshold in 1.5–4.0 s and 25–50 m; contains the separately reviewed dry-ABS 31–42 m envelope with margin for the harness stop threshold |
+| steady steer | final absolute yaw 0.04–0.30 rad/s, sideslip below 0.12 rad and wheel slip below 0.30; brackets the low-g bicycle-model regression |
+| step steer | peak yaw 0.08–0.60 rad/s, sideslip below 0.15 rad and wheel slip below 0.35; rejects absent response and unstable reversal |
+| slalom | peak yaw 0.08–0.80 rad/s, sideslip below 0.20 rad and 5–12 yaw sign changes; verifies response to the declared 0.5 Hz input |
+
+For the 100–0 maneuver, reported distance is captured at the first 2 m/s
+threshold crossing. The runner continues to the declared duration for a fixed
+time-series shape, but post-stop rolling is excluded from braking distance.
+Every artifact records the selected vehicle preset and definition/provenance
+revision so future measured and gameplay definitions cannot be silently mixed.
+
 The integration suite currently covers:
 
 | Test | Evidence |
@@ -53,7 +100,6 @@ The engineering-reference RWD definition uses symmetric 1.0 tire-fitment scales.
 ## Required next validation
 
 - Additional free-fall, yaw-inertia and energy-dissipation fixtures
-- Skid pad, coast-down, braking-distance and steady-state cornering envelopes
 - Parameter sweeps for timestep stability and thermal equilibrium
 - Golden telemetry traces checked with tolerances, not only state hashes
 - Comparison against instrumented reference-vehicle data

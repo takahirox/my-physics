@@ -13,6 +13,10 @@ crate-type = ["rlib", "cdylib"]
 name = "my-physics-headless"
 path = "src/bin/headless.rs"
 
+[[bin]]
+name = "maneuver-validation"
+path = "src/bin/maneuver-validation.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1

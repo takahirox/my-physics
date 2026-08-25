@@ -4,7 +4,7 @@ use crate::controls::DriverInput;
 use crate::math::{Quat, Vec3, clamp01, semi_implicit_linear_step};
 use crate::road::DynamicRoad;
 use crate::tire::{MagicFormulaTire, TireInput};
-use crate::vehicle::{Vehicle, VehicleDefinition, evaluate_tire};
+use crate::vehicle::{Vehicle, VehicleDefinition, aerodynamic_drag_magnitude_n, evaluate_tire};
 
 /// Inner face of the barriers on the procedural v0.1 demonstration circuit.
 pub const DEMO_TRACK_HALF_WIDTH_M: f64 = 5.6;
@@ -546,17 +546,10 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
         let cg_local = v.cg_local_m();
         let relative_air = v.state.linear_velocity_mps - wind;
         let air_speed = relative_air.length();
-        let drag_scale = 1.0 + v.state.damage.aero * 0.8;
         let mut force = Vec3::new(0.0, -mass * gravity, 0.0);
         if air_speed > 1.0e-6 {
             force -= relative_air / air_speed
-                * (0.5
-                    * v.definition.chassis.air_density_kg_m3
-                    * v.definition.chassis.drag_coefficient
-                    * drag_scale
-                    * v.definition.chassis.frontal_area_m2
-                    * air_speed
-                    * air_speed);
+                * aerodynamic_drag_magnitude_n(&v.definition.chassis, air_speed, v.state.damage.aero);
         }
         force += -body_up
             * (0.5

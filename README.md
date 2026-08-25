@@ -43,6 +43,7 @@ For a rendering-free simulation and CSV telemetry:
 cargo run --release --bin my-physics-headless -- 10 > telemetry.csv
 cargo run --release --example circuit_lap
 cargo run --release --example steering_validation
+./scripts/run-maneuver-validation.sh target/maneuver-validation
 ```
 
 ## Architecture

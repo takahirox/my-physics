@@ -16,6 +16,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+      - run: cargo run --release --bin maneuver-validation -- --summary
       - run: node --test tests/web_visual_config.mjs
       - run: cargo build --release --target wasm32-unknown-unknown --lib
       - run: cp target/wasm32-unknown-unknown/release/my_physics.wasm web/physics.wasm

@@ -15,6 +15,20 @@ pub struct ChassisDefinition {
     pub air_density_kg_m3: f64,
 }
 
+/// Aerodynamic drag magnitude used by the vehicle integrator.
+///
+/// This pure form makes the speed-squared invariant testable without tire or
+/// suspension transients obscuring the relationship.
+pub fn aerodynamic_drag_magnitude_n(chassis: &ChassisDefinition, air_speed_mps: f64, aero_damage: f64) -> f64 {
+    let drag_scale = 1.0 + aero_damage * 0.8;
+    0.5 * chassis.air_density_kg_m3
+        * chassis.drag_coefficient
+        * drag_scale
+        * chassis.frontal_area_m2
+        * air_speed_mps
+        * air_speed_mps
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WheelDefinition {
     pub mount_local_m: Vec3,

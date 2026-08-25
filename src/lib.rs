@@ -12,6 +12,7 @@ pub mod math;
 pub mod provenance;
 pub mod road;
 pub mod tire;
+pub mod validation;
 pub mod vehicle;
 pub mod world;
 
