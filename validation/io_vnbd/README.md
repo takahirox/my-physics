@@ -162,7 +162,7 @@ not rows or windows from a run, are the unit of separation.
 | Validation | `V-Vw7`, `V-Vw16b` | successive-turn model selection; independent straight hard-brake check |
 | Historical holdout | `V-Vta1b`, `V-vtb12` | preserved wet/muddy braking and wet/night roundabout evaluation |
 | Post-observation regression | `V-Vta14`, `V-Vta30`, `V-Vfb02g` | useful regression runs, but not independent final evidence because common-plant fixes followed their first opening |
-| Sealed independent final | `V-Vw3`, `V-Vtb8` | registered with frozen longitudinal policy; run only once from the clean committed source |
+| Independent final | `V-Vw3`, `V-Vtb8` | registered with frozen longitudinal policy, then run once from clean commit `7beb15e` |
 | CI smoke only | `V-Vw17` | short parser/simulation/report path; never parameter fitting or final evidence |
 
 The split exercises longitudinal and lateral behavior while keeping every run
@@ -184,8 +184,8 @@ Selected raw-file audit at the pinned snapshot (GPS coordinates excluded):
 | `V-Vta14` | 2,893 | 289.2 | 52.8–91.0 | hard braking/rapid acceleration; steering exactly zero, longitudinal final only |
 | `V-Vta30` | 17,179 | 1,717.8 | 0.0–100.0 | wet mixed route; requested gear 14 anomaly and unresolved unilateral steering |
 | `V-Vfb02g` | 27,159 | 2,715.8 | 0.0–119.4 | broad endurance route; unresolved unilateral steering |
-| `V-Vw3` | 3,861 | 386.0 | not opened | sealed synchronized final; raw count differs from the paper's 3,942-row unsynchronized catalog entry |
-| `V-Vtb8` | 699 | 69.8 | not opened | sealed wet-night approximately straight A5 final |
+| `V-Vw3` | 3,861 | 386.0 | 0.00–75.75 | synchronized final; raw count differs from the paper's 3,942-row unsynchronized catalog entry |
+| `V-Vtb8` | 699 | 69.8 | 61.44–76.84 | wet-night approximately straight A5 final |
 
 These are descriptive checks, not acceptance thresholds. Missing/unusable
 channels are excluded with a recorded reason, never replaced with fabricated
@@ -236,9 +236,13 @@ cargo run --release --bin correlate-io-vnbd -- \
   --split calibration
 ```
 
-`--split all` now includes the sealed `V-Vw3`/`V-Vtb8` final suite. Do not run
-that command before the clean source commit is frozen and the one-time final
-opening is authorized. Calibration and Validation commands do not open it.
+`--split holdout` and `--split all` exclude the frozen `V-Vw3`/`V-Vtb8`
+independent-final suite by default. `--run-id` alone cannot open either run.
+Their one-time independent evaluation was performed from clean commit
+`7beb15e`; later runs are reproducibility checks, not new independent evidence.
+An explicit reproduction requires `--include-independent-final true`, the
+selected exponent 0.30, a resolved Git revision and a completely clean
+worktree. The runner enforces all four conditions.
 
 For scientific separation, prefer three calls in the protocol order using
 `--split calibration`, then `validation`, then `holdout`. The correlation
@@ -276,7 +280,19 @@ cargo run --release --bin correlate-io-vnbd -- \
 ```
 
 The runner rejects exponent 0.35 for `holdout` or `all`; only the selected and
-frozen 0.30 model may open final data.
+frozen 0.30 model may open final data. Reproduce the already-opened final runs
+only from a clean committed source, one explicitly named run at a time:
+
+```sh
+cargo run --release --bin correlate-io-vnbd -- \
+  --data-root /path/to/io-vnbd-data --output target/io-vnbd-final-repro \
+  --split holdout --run-id V-Vw3 --pedal-exponent 0.30 \
+  --include-independent-final true
+cargo run --release --bin correlate-io-vnbd -- \
+  --data-root /path/to/io-vnbd-data --output target/io-vnbd-final-repro \
+  --split holdout --run-id V-Vtb8 --pedal-exponent 0.30 \
+  --include-independent-final true
+```
 
 ## Calibration, validation and holdout protocol
 
@@ -290,9 +306,10 @@ frozen 0.30 model may open final data.
    create a new revision and require validation to be rerun.
 5. Preserve the historical `V-Vta1b`/`V-vtb12` and post-observation regression
    `V-Vta14`/`V-Vta30`/`V-Vfb02g` results. They are not independent final
-   evidence because common-plant corrections followed observation. After the
-   source is committed and clean, evaluate sealed `V-Vw3` and `V-Vtb8` once.
-   Any subsequent model change requires another independent suite.
+   evidence because common-plant corrections followed observation. Clean
+   commit `7beb15e` evaluated sealed `V-Vw3` and `V-Vtb8` once. Explicit later
+   executions are reproducibility checks. Any subsequent model change requires
+   another independent suite.
 
 Each maneuver starts from its measured initial speed, wheel speeds, actual gear
 and engine speed where valid. Later state is produced by the common deterministic

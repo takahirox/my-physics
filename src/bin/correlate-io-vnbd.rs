@@ -147,6 +147,94 @@ struct Options {
     split: String,
     run_id: Option<String>,
     pedal_exponent: f64,
+    include_independent_final: bool,
+}
+
+#[derive(Clone, Copy)]
+struct AcquisitionMetadata {
+    purpose: &'static str,
+    synchronization: &'static str,
+    source_path: &'static str,
+    scenario: &'static str,
+}
+
+fn acquisition_metadata(run: Run) -> AcquisitionMetadata {
+    let values = match run.id {
+        "V-Vw1" => (
+            "sensor-bias",
+            "synchronized",
+            "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw01/V-Vw1.csv",
+            "stationary recording; sensor-bias characterization",
+        ),
+        "V-Vw12" => (
+            "parameter-identification",
+            "synchronized",
+            "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw12/V-Vw12.csv",
+            "approximately straight and steady-speed road segment",
+        ),
+        "V-Vfb02c" => (
+            "parameter-identification",
+            "vehicle-only",
+            "Unsynchronised V and S Dataset/Categorised IOVNB (V) Dataset/V Dataset/Vf (Driver E)/V-Vfb02c/V-Vfb02c.csv",
+            "U-turn and hard braking; low-gear steering/brake excitation",
+        ),
+        "V-Vw7" => (
+            "model-selection",
+            "synchronized",
+            "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw07/V-Vw7.csv",
+            "successive turns",
+        ),
+        "V-Vw16b" => (
+            "model-selection",
+            "synchronized",
+            "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw16b/V-Vw16b.csv",
+            "hard braking on approximately straight A-road at night",
+        ),
+        "V-Vta1b" => (
+            "final-evaluation",
+            "synchronized",
+            "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vta (Driver E)/Vta01b/V-Vta1b.csv",
+            "wet/muddy hard-braking segment; steering channel is zero throughout",
+        ),
+        "V-vtb12" => (
+            "final-evaluation",
+            "synchronized",
+            "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vtb (Driver E)/Vtb12/V-vtb12.csv",
+            "wet night roundabout",
+        ),
+        "V-Vta14" => (
+            "post-observation-regression",
+            "vehicle-only",
+            "Unsynchronised V and S Dataset/Categorised IOVNB (V) Dataset/V Dataset/Vta (Driver E)/Vta14/V-Vta14.csv",
+            "longitudinal hard braking and rapid acceleration; opened before later common-plant fixes; not independent final evidence",
+        ),
+        "V-Vta30" => (
+            "post-observation-regression",
+            "vehicle-only",
+            "Unsynchronised V and S Dataset/Categorised IOVNB (V) Dataset/V Dataset/Vta (Driver E)/Vta30/V-Vta30.csv",
+            "wet mixed road; opened before later common-plant fixes; requested gear 14 quarantined",
+        ),
+        "V-Vfb02g" => (
+            "post-observation-regression",
+            "vehicle-only",
+            "Unsynchronised V and S Dataset/Categorised IOVNB (V) Dataset/V Dataset/Vf (Driver E)/V-Vfb02g/V-Vfb02g.csv",
+            "broad endurance roads; opened before later common-plant fixes; not independent final evidence",
+        ),
+        "V-Vw3" => (
+            "sealed-independent-final",
+            "synchronized",
+            "Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw03/V-Vw3.csv",
+            "sealed final: daytime B-road/inner-city/six roundabouts; longitudinal policy; requested gear 14 quarantined",
+        ),
+        "V-Vtb8" => (
+            "sealed-independent-final",
+            "vehicle-only",
+            "Unsynchronised V and S Dataset/Categorised IOVNB (V) Dataset/V Dataset/Vtb (Driver E)/Vtb08/V-Vtb8.csv",
+            "sealed final: wet night approximately straight A5; longitudinal policy",
+        ),
+        _ => unreachable!("all runner runs have pinned acquisition metadata"),
+    };
+    AcquisitionMetadata { purpose: values.0, synchronization: values.1, source_path: values.2, scenario: values.3 }
 }
 
 fn main() {
@@ -159,6 +247,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
     verify_acquisition_manifest()?;
+    validate_independent_final_access(&options, &software_revision(), software_worktree_state())?;
     fs::create_dir_all(&options.output)?;
     fs::write(options.output.join("parameter-estimates.manifest"), parameter_artifact().to_text()?)?;
     fs::write(options.output.join("fit-trace.csv"), fit_trace())?;
@@ -170,10 +259,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     fs::write(options.output.join("fit-diagnostics.json"), brake_fit_diagnostics(&brake_calibration)?)?;
 
     let mut summaries = Vec::new();
-    for run in RUNS.iter().copied().filter(|run| {
-        (options.split == "all" || options.split == run.split)
-            && options.run_id.as_ref().is_none_or(|run_id| run_id == run.id)
-    }) {
+    for run in RUNS.iter().copied().filter(|run| run_is_selected(&options, *run)) {
         let manifest = reference_manifest(run);
         let reference = load_reference(&options.data_root, run)?;
 
@@ -345,6 +431,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     let mut split = "all".to_owned();
     let mut run_id = None;
     let mut pedal_exponent = ACCELERATOR_TO_THROTTLE_EXPONENT;
+    let mut include_independent_final = false;
     let mut index = 0;
     while index < args.len() {
         let value = args.get(index + 1).ok_or_else(|| format!("{} requires a value", args[index]))?;
@@ -354,8 +441,15 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             "--split" => split = value.clone(),
             "--run-id" => run_id = Some(value.clone()),
             "--pedal-exponent" => pedal_exponent = value.parse()?,
+            "--include-independent-final" => {
+                include_independent_final = match value.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("--include-independent-final requires true or false".into()),
+                }
+            }
             "--help" | "-h" => return Err(
-                "usage: correlate-io-vnbd --data-root PATH --output PATH [--split calibration|validation|holdout|all] [--run-id ID] [--pedal-exponent 0.30|0.35]"
+                "usage: correlate-io-vnbd --data-root PATH --output PATH [--split calibration|validation|holdout|all] [--run-id ID] [--pedal-exponent 0.30|0.35] [--include-independent-final true|false]"
                     .into(),
             ),
             unknown => return Err(format!("unknown argument {unknown:?}").into()),
@@ -377,7 +471,58 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         split,
         run_id,
         pedal_exponent,
+        include_independent_final,
     })
+}
+
+fn is_independent_final(run: Run) -> bool {
+    acquisition_metadata(run).purpose == "sealed-independent-final"
+}
+
+fn run_is_selected(options: &Options, run: Run) -> bool {
+    (options.split == "all" || options.split == run.split)
+        && options.run_id.as_ref().is_none_or(|run_id| run_id == run.id)
+        && (!is_independent_final(run) || options.include_independent_final)
+}
+
+fn validate_independent_final_access(
+    options: &Options,
+    revision: &str,
+    worktree_state: &str,
+) -> Result<(), Box<dyn Error>> {
+    let explicitly_named_final = options
+        .run_id
+        .as_ref()
+        .and_then(|id| RUNS.iter().copied().find(|run| run.id == id))
+        .is_some_and(is_independent_final);
+    if explicitly_named_final && !options.include_independent_final {
+        return Err("--run-id alone cannot open sealed independent-final data; add --include-independent-final true after reviewing the protocol".into());
+    }
+    if !options.include_independent_final {
+        return Ok(());
+    }
+    let named_final = options
+        .run_id
+        .as_ref()
+        .and_then(|id| RUNS.iter().copied().find(|run| run.id == id))
+        .filter(|run| is_independent_final(*run))
+        .ok_or("--include-independent-final true requires --run-id V-Vw3 or --run-id V-Vtb8")?;
+    if options.split != "all" && options.split != named_final.split {
+        return Err("independent-final --run-id must be selected by --split holdout or --split all".into());
+    }
+    if options.pedal_exponent != ACCELERATOR_TO_THROTTLE_EXPONENT {
+        return Err("independent-final access requires the selected frozen pedal exponent 0.30".into());
+    }
+    if worktree_state != "clean" {
+        return Err(format!("independent-final access requires a clean Git worktree, got {worktree_state:?}").into());
+    }
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "independent-final access requires a resolved 40-character Git revision, got {revision:?}"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn split(name: &str) -> DatasetSplit {
@@ -1085,8 +1230,14 @@ fn run_provenance(
     calibrated: &DatasetManifest,
     pedal_exponent: f64,
 ) -> String {
+    let acquisition = acquisition_metadata(run);
     format!(
-        "{{\"schema_version\":1,\"physics_dt_s\":0.001,\"physics_mode\":\"fixed timestep; automatic LOD disabled\",\"physics_package_version\":\"{}\",\"software_git_revision\":\"{}\",\"software_worktree_state\":\"{}\",\"input_reconstruction_revision\":\"{}\",\"input_map\":{{\"accelerator_to_throttle_exponent\":{:.6},\"accelerator_map_identifiability\":\"effective concave demand conditional on authored engine torque curve; not throttle-plate measurement\",\"brake_position_zoh_gate\":true,\"brake_full_scale_psi\":{:.6}}},\"candidate_sensor_adapter\":{{\"revision\":\"{}\",\"body_acceleration\":\"100 ordinary 1ms physical samples boxcar-averaged into each 100ms source interval\"}},\"driver_aids\":{{\"abs\":true,\"traction_control\":false,\"stability_control\":false}},\"pressure_condition\":\"{}\",\"pressure_source\":\"published IO-VNBD scenario table; FL/FR/RL/RR mapped explicitly\",\"applied_1ms_input_fingerprint_sha256\":\"{}\",\"normalized_reference_table_fingerprint_sha256\":\"{}\",\"baseline_output_fingerprint\":\"{}\",\"calibrated_output_fingerprint\":\"{}\",\"initialization\":\"stationary neutral pre-roll; measured state at t0 only; no later state injection\",\"scoring_start_s\":0.1,\"scoring_start_reason\":\"t0 has no post-initialization physical interval; first scored sample follows 100 ordinary 1ms steps\"}}\n",
+        "{{\"schema_version\":1,\"acquisition\":{{\"evidence_role\":\"{}\",\"purpose\":\"{}\",\"synchronization\":\"{}\",\"source_path\":\"{}\",\"scenario\":\"{}\"}},\"physics_dt_s\":0.001,\"physics_mode\":\"fixed timestep; automatic LOD disabled\",\"physics_package_version\":\"{}\",\"software_git_revision\":\"{}\",\"software_worktree_state\":\"{}\",\"input_reconstruction_revision\":\"{}\",\"input_map\":{{\"accelerator_to_throttle_exponent\":{:.6},\"accelerator_map_identifiability\":\"effective concave demand conditional on authored engine torque curve; not throttle-plate measurement\",\"brake_position_zoh_gate\":true,\"brake_full_scale_psi\":{:.6}}},\"candidate_sensor_adapter\":{{\"revision\":\"{}\",\"body_acceleration\":\"100 ordinary 1ms physical samples boxcar-averaged into each 100ms source interval\"}},\"driver_aids\":{{\"abs\":true,\"traction_control\":false,\"stability_control\":false}},\"pressure_condition\":\"{}\",\"pressure_source\":\"published IO-VNBD scenario table; FL/FR/RL/RR mapped explicitly\",\"applied_1ms_input_fingerprint_sha256\":\"{}\",\"normalized_reference_table_fingerprint_sha256\":\"{}\",\"baseline_output_fingerprint\":\"{}\",\"calibrated_output_fingerprint\":\"{}\",\"initialization\":\"stationary neutral pre-roll; measured state at t0 only; no later state injection\",\"scoring_start_s\":0.1,\"scoring_start_reason\":\"t0 has no post-initialization physical interval; first scored sample follows 100 ordinary 1ms steps\"}}\n",
+        acquisition.purpose,
+        acquisition.purpose,
+        acquisition.synchronization,
+        acquisition.source_path,
+        acquisition.scenario,
         env!("CARGO_PKG_VERSION"),
         software_revision(),
         software_worktree_state(),
@@ -1107,7 +1258,7 @@ fn software_revision() -> String {
 }
 
 fn software_worktree_state() -> &'static str {
-    match git_output(&["status", "--porcelain", "--untracked-files=no"]) {
+    match git_output(&["status", "--porcelain"]) {
         Some(output) if output.is_empty() => "clean",
         Some(_) => "dirty",
         None => "unavailable",
@@ -1424,17 +1575,30 @@ fn verify_acquisition_manifest() -> Result<(), Box<dyn Error>> {
         .map(|line| line.split('\t').collect())
         .collect();
     for run in RUNS {
-        let row = rows
-            .iter()
-            .find(|row| row.first() == Some(&run.id))
-            .ok_or_else(|| format!("{} is absent from {}", run.id, path.display()))?;
+        let matches: Vec<_> = rows.iter().filter(|row| row.first() == Some(&run.id)).collect();
+        if matches.len() != 1 {
+            return Err(
+                format!("{} must occur exactly once in {}, got {}", run.id, path.display(), matches.len()).into()
+            );
+        }
+        let row = matches[0];
+        let metadata = acquisition_metadata(run);
         if row.len() != 9
+            || row[0] != run.id
             || row[1] != run.split
+            || row[2] != metadata.purpose
+            || row[3] != metadata.synchronization
             || row[4] != run.pressure.to_string()
-            || row[5].parse::<u64>()? != run.bytes
+            || row[5] != run.bytes.to_string()
             || row[6] != run.checksum
+            || row[7] != metadata.source_path
+            || row[8] != metadata.scenario
         {
-            return Err(format!("{} disagrees with pinned acquisition manifest", run.id).into());
+            return Err(format!(
+                "{} disagrees with pinned acquisition manifest in one or more of its nine columns",
+                run.id
+            )
+            .into());
         }
     }
     Ok(())
@@ -1485,6 +1649,52 @@ fn verify_exact_header(path: &Path) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_options(split: &str, run_id: Option<&str>, include_independent_final: bool) -> Options {
+        Options {
+            data_root: PathBuf::from("unused"),
+            output: PathBuf::from("unused"),
+            split: split.to_owned(),
+            run_id: run_id.map(str::to_owned),
+            pedal_exponent: ACCELERATOR_TO_THROTTLE_EXPONENT,
+            include_independent_final,
+        }
+    }
+
+    #[test]
+    fn independent_final_requires_explicit_clean_committed_access() {
+        let sealed = RUNS.iter().copied().find(|run| run.id == "V-Vw3").unwrap();
+        let ordinary = RUNS.iter().copied().find(|run| run.id == "V-Vta14").unwrap();
+        let default_all = test_options("all", None, false);
+        assert_eq!(RUNS.iter().copied().filter(|run| run_is_selected(&default_all, *run)).count(), 10);
+        assert!(!run_is_selected(&default_all, sealed));
+        assert!(run_is_selected(&default_all, ordinary));
+
+        let named_only = test_options("holdout", Some("V-Vw3"), false);
+        assert!(validate_independent_final_access(&named_only, &"a".repeat(40), "clean").is_err());
+
+        let explicit = test_options("holdout", Some("V-Vw3"), true);
+        assert!(run_is_selected(&explicit, sealed));
+        assert!(validate_independent_final_access(&explicit, &"a".repeat(40), "dirty").is_err());
+        assert!(validate_independent_final_access(&explicit, "unavailable", "clean").is_err());
+        assert!(validate_independent_final_access(&explicit, &"a".repeat(40), "clean").is_ok());
+
+        let explicit_all = test_options("all", None, true);
+        assert!(validate_independent_final_access(&explicit_all, &"a".repeat(40), "clean").is_err());
+        let non_final = test_options("holdout", Some("V-Vta14"), true);
+        assert!(validate_independent_final_access(&non_final, &"a".repeat(40), "clean").is_err());
+        let wrong_split = test_options("validation", Some("V-Vw3"), true);
+        assert!(validate_independent_final_access(&wrong_split, &"a".repeat(40), "clean").is_err());
+
+        let mut wrong_model = explicit.clone();
+        wrong_model.pedal_exponent = 0.35;
+        assert!(validate_independent_final_access(&wrong_model, &"a".repeat(40), "clean").is_err());
+    }
+
+    #[test]
+    fn acquisition_manifest_matches_all_nine_pinned_columns() {
+        verify_acquisition_manifest().unwrap();
+    }
 
     #[test]
     fn sha256_matches_nist_short_message_vector() {

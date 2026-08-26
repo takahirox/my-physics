@@ -1,6 +1,7 @@
 # IO-VNBD correlation result v2
 
-Status: frozen-model real-data result; physical plausibility/correlation only.
+Status: clean-commit frozen-model real-data result; physical
+plausibility/correlation only.
 This is not a measured tire fit, certification or safety validation.
 
 ## What changed before final evaluation
@@ -107,11 +108,29 @@ All three calibrated regression scores improve their v2 baselines, but the absol
 errors remain material. In particular, RPM retains a large negative bias and
 the long-run scores are not evidence of an exact Fiesta variant correlation.
 
-The true independent final suite is sealed as `V-Vw3` (synchronized 3,861
+The true independent final suite was sealed as `V-Vw3` (synchronized 3,861
 rows, pressure C) and `V-Vtb8` (699 rows, pressure A). Their path, SHA-256,
-size, scenario and the same longitudinal/stable-gear-RPM policy are committed
-before opening. No result belongs in this document until the clean committed
-source runs each once.
+size, scenario and longitudinal/stable-gear-RPM policy were committed before
+opening. Each was then run exactly once from clean commit
+`7beb15e817d8d9b509add1b4c7e504730d476ce4`.
+
+| Run | baseline primary | calibrated primary | baseline final | calibrated final | Stable RPM samples | calibrated RPM RMSE |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `V-Vw3` | 1.001814 | 0.815876 | 0.966793 | 0.789460 | 3,396 | 571.32 rpm |
+| `V-Vtb8` | 0.804606 | 0.759727 | 0.765122 | 0.725442 | 667 | 412.10 rpm |
+
+Both frozen-model final scores improve their baselines, but neither is a
+high-accuracy correlation. `V-Vw3` indicated/GPS speed RMSE is 4.644/4.658
+m/s with about -3.0 m/s bias; longitudinal-acceleration RMSE is 0.716 m/s2.
+`V-Vtb8` indicated/GPS speed RMSE is 4.348/4.266 m/s with about -3.9/-3.8
+m/s bias; longitudinal-acceleration RMSE is 0.560 m/s2. Its narrow speed range
+also produces negative speed R2 despite positive correlation near 0.40.
+Stable-gear RPM improves from 672.37 to 571.32 rpm on `V-Vw3`, but worsens
+from 389.30 to 412.10 rpm on `V-Vtb8`; that unfavorable result is retained.
+The calibrated output fingerprints are
+`41c0c6be21526e8cfbf59886d6587b1a332648195490cb565c732a88b2287619`
+and `fb09f1a82b737c6c2f9633f6b731fe1e4367aa2328834418411da4a9733d4091`
+respectively.
 
 ## Reproduction and limits
 
@@ -120,9 +139,19 @@ scripts/fetch-io-vnbd.sh target/io-vnbd/raw --split calibration
 scripts/fetch-io-vnbd.sh target/io-vnbd/raw --split validation
 scripts/fetch-io-vnbd.sh target/io-vnbd/raw --split holdout
 scripts/fetch-io-vnbd.sh --verify-only --output target/io-vnbd/raw --split all
-# After the clean source commit only; --split all opens the sealed suite:
+# Ordinary all-run regression excludes the independent-final pair:
 cargo run --release --bin correlate-io-vnbd -- \
   --data-root target/io-vnbd/raw --output target/io-vnbd-correlation-v2 --split all
+# Explicit clean-commit reproduction only; independent-evaluation status
+# belongs solely to the first execution reported above:
+cargo run --release --bin correlate-io-vnbd -- \
+  --data-root target/io-vnbd/raw --output target/io-vnbd-final-repro \
+  --split holdout --run-id V-Vw3 --pedal-exponent 0.30 \
+  --include-independent-final true
+cargo run --release --bin correlate-io-vnbd -- \
+  --data-root target/io-vnbd/raw --output target/io-vnbd-final-repro \
+  --split holdout --run-id V-Vtb8 --pedal-exponent 0.30 \
+  --include-independent-final true
 ```
 
 The exact model year/engine/loading, CG/inertia, road grade, wind, tire
