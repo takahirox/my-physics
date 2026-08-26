@@ -51,7 +51,10 @@ cargo run --release --example steering_validation
 Licensed external telemetry can be compared through the dataset-independent
 [real-world correlation framework](docs/real-world-correlation.md). Its strict
 manifest, split, alignment and provenance rules do not alter the physical
-plant, and no third-party raw dataset is included in this repository.
+plant, and no third-party raw dataset is included in this repository. The
+generic command compares hash-verified time series; the IO-VNBD-specific runner
+separately proves deterministic 1 ms `PhysicsWorld` execution and emits visual
+measured-versus-simulated evidence.
 
 ## Architecture
 

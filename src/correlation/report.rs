@@ -1,4 +1,4 @@
-use super::{AlignedSeries, CorrelationError, CorrelationPurpose, DatasetManifest, Result};
+use super::{AlignedSeries, ClockCorrection, CorrelationError, CorrelationPurpose, DatasetManifest, Result};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -42,7 +42,15 @@ pub struct CorrelationReport {
     pub alignment_revision: String,
     pub filter_revision: String,
     pub candidate_id: String,
+    pub candidate_checksum: String,
+    pub candidate_vehicle_id: String,
+    pub candidate_session_id: String,
+    pub candidate_split: String,
+    pub candidate_provenance_origin: String,
+    pub candidate_provenance_source: String,
     pub candidate_revision: String,
+    pub reference_clock: ClockCorrection,
+    pub candidate_clock: ClockCorrection,
     pub sample_period_s: f64,
     pub overlap_start_s: f64,
     pub overlap_end_s: f64,
@@ -55,14 +63,28 @@ pub fn evaluate(
     report_id: impl Into<String>,
     purpose: CorrelationPurpose,
     reference_manifest: &DatasetManifest,
-    candidate_id: impl Into<String>,
+    candidate_manifest: &DatasetManifest,
     candidate_revision: impl Into<String>,
     aligned: &AlignedSeries,
 ) -> Result<CorrelationReport> {
     reference_manifest.validate()?;
+    candidate_manifest.validate()?;
     reference_manifest.require_purpose(purpose)?;
-    if aligned.time_s.len() < 2 {
+    if candidate_manifest.split != reference_manifest.split {
+        return Err(CorrelationError::SplitViolation(format!(
+            "candidate split {} does not match reference split {}",
+            candidate_manifest.split.name(),
+            reference_manifest.split.name()
+        )));
+    }
+    if aligned.time_s.len() < 2 || aligned.mappings.is_empty() {
         return Err(CorrelationError::InvalidAlignment("report requires at least two aligned samples".to_owned()));
+    }
+    if aligned.time_s.iter().any(|value| !value.is_finite()) || aligned.time_s.windows(2).any(|pair| pair[1] <= pair[0])
+    {
+        return Err(CorrelationError::InvalidAlignment(
+            "report timestamps must be finite and strictly increasing".to_owned(),
+        ));
     }
     let mut metrics = BTreeMap::new();
     let mut normalized_squared = 0.0;
@@ -79,9 +101,27 @@ pub fn evaluate(
                 mapping.output_name
             )));
         }
+        if reference.iter().chain(candidate).any(|value| !value.is_finite()) {
+            return Err(CorrelationError::InvalidAlignment(format!(
+                "aligned channel {:?} contains non-finite data",
+                mapping.output_name
+            )));
+        }
         let channel = channel_metrics(reference, candidate, &aligned.time_s, &mapping.unit, mapping.lag_search_bound_s);
+        if !metrics_are_finite(&channel) {
+            return Err(CorrelationError::InvalidAlignment(format!(
+                "metrics for {:?} overflowed or became non-finite",
+                mapping.output_name
+            )));
+        }
         normalized_squared += (channel.rmse / mapping.normalization_scale).powi(2);
         metrics.insert(mapping.output_name.clone(), channel);
+    }
+    let aggregate_normalized_rmse = (normalized_squared / aligned.mappings.len() as f64).sqrt();
+    if !aggregate_normalized_rmse.is_finite() {
+        return Err(CorrelationError::InvalidAlignment(
+            "aggregate normalized metric overflowed or became non-finite".to_owned(),
+        ));
     }
     Ok(CorrelationReport {
         schema_version: 1,
@@ -97,15 +137,44 @@ pub fn evaluate(
         mapping_revision: reference_manifest.mapping_revision.clone(),
         alignment_revision: aligned.alignment_revision.clone(),
         filter_revision: reference_manifest.filter_revision.clone(),
-        candidate_id: candidate_id.into(),
+        candidate_id: candidate_manifest.dataset_id.clone(),
+        candidate_checksum: candidate_manifest.content_checksum.clone(),
+        candidate_vehicle_id: candidate_manifest.vehicle_id.clone(),
+        candidate_session_id: candidate_manifest.session_id.clone(),
+        candidate_split: candidate_manifest.split.name().to_owned(),
+        candidate_provenance_origin: candidate_manifest.provenance.origin.clone(),
+        candidate_provenance_source: candidate_manifest.provenance.source.clone(),
         candidate_revision: candidate_revision.into(),
+        reference_clock: aligned.reference_clock,
+        candidate_clock: aligned.candidate_clock,
         sample_period_s: aligned.time_s[1] - aligned.time_s[0],
         overlap_start_s: aligned.time_s[0],
         overlap_end_s: aligned.time_s[aligned.time_s.len() - 1],
         channel_metrics: metrics,
-        aggregate_normalized_rmse: (normalized_squared / aligned.mappings.len() as f64).sqrt(),
+        aggregate_normalized_rmse,
         disclaimer: CORRELATION_DISCLAIMER.to_owned(),
     })
+}
+
+fn metrics_are_finite(metrics: &ChannelMetrics) -> bool {
+    [
+        metrics.mae,
+        metrics.rmse,
+        metrics.max_abs_error,
+        metrics.bias,
+        metrics.reference_peak,
+        metrics.candidate_peak,
+        metrics.peak_value_error,
+        metrics.peak_time_error_s,
+        metrics.reference_min,
+        metrics.reference_max,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        && [metrics.r_squared, metrics.correlation, metrics.best_lag_s, metrics.best_lag_correlation]
+            .into_iter()
+            .flatten()
+            .all(f64::is_finite)
 }
 
 fn channel_metrics(
@@ -192,10 +261,10 @@ fn best_lag(reference: &[f64], candidate: &[f64], time_s: &[f64], bound_s: f64) 
                 let candidate_index = reference_index as isize + lag;
                 (0..candidate.len() as isize)
                     .contains(&candidate_index)
-                    .then_some((reference[reference_index], candidate[candidate_index as usize]))
+                    .then(|| (reference[reference_index], candidate[candidate_index as usize]))
             })
             .collect();
-        if pairs.len() < 3 {
+        if pairs.len() < 3.max(reference.len() / 2) {
             continue;
         }
         let reference_mean = pairs.iter().map(|pair| pair.0).sum::<f64>() / pairs.len() as f64;
@@ -222,7 +291,7 @@ impl CorrelationReport {
         let mut output = String::new();
         write!(
             output,
-            "{{\"schema_version\":{},\"report_id\":\"{}\",\"purpose\":\"{}\",\"reference_dataset_id\":\"{}\",\"reference_checksum\":\"{}\",\"reference_vehicle_id\":\"{}\",\"reference_session_id\":\"{}\",\"reference_split\":\"{}\",\"reference_license_id\":\"{}\",\"reference_license_verified\":{},\"mapping_revision\":\"{}\",\"alignment_revision\":\"{}\",\"filter_revision\":\"{}\",\"candidate_id\":\"{}\",\"candidate_revision\":\"{}\",\"sample_period_s\":{:.9},\"overlap_start_s\":{:.9},\"overlap_end_s\":{:.9},\"aggregate_normalized_rmse\":{:.9},\"disclaimer\":\"{}\",\"channels\":{{",
+            "{{\"schema_version\":{},\"report_id\":\"{}\",\"purpose\":\"{}\",\"reference_dataset_id\":\"{}\",\"reference_checksum\":\"{}\",\"reference_vehicle_id\":\"{}\",\"reference_session_id\":\"{}\",\"reference_split\":\"{}\",\"reference_license_id\":\"{}\",\"reference_license_verified\":{},\"mapping_revision\":\"{}\",\"alignment_revision\":\"{}\",\"filter_revision\":\"{}\",\"candidate_id\":\"{}\",\"candidate_checksum\":\"{}\",\"candidate_vehicle_id\":\"{}\",\"candidate_session_id\":\"{}\",\"candidate_split\":\"{}\",\"candidate_provenance\":{{\"origin\":\"{}\",\"source\":\"{}\",\"revision\":\"{}\"}},\"reference_clock\":{{\"scale\":{:.17},\"offset_s\":{:.9},\"declared_latency_s\":{:.9}}},\"candidate_clock\":{{\"scale\":{:.17},\"offset_s\":{:.9},\"declared_latency_s\":{:.9}}},\"sample_period_s\":{:.9},\"overlap_start_s\":{:.9},\"overlap_end_s\":{:.9},\"aggregate_normalized_rmse\":{:.9},\"disclaimer\":\"{}\",\"channels\":{{",
             self.schema_version,
             json_escape(&self.report_id),
             self.purpose.name(),
@@ -237,7 +306,19 @@ impl CorrelationReport {
             json_escape(&self.alignment_revision),
             json_escape(&self.filter_revision),
             json_escape(&self.candidate_id),
+            json_escape(&self.candidate_checksum),
+            json_escape(&self.candidate_vehicle_id),
+            json_escape(&self.candidate_session_id),
+            json_escape(&self.candidate_split),
+            json_escape(&self.candidate_provenance_origin),
+            json_escape(&self.candidate_provenance_source),
             json_escape(&self.candidate_revision),
+            self.reference_clock.scale,
+            self.reference_clock.offset_s,
+            self.reference_clock.declared_latency_s,
+            self.candidate_clock.scale,
+            self.candidate_clock.offset_s,
+            self.candidate_clock.declared_latency_s,
             self.sample_period_s,
             self.overlap_start_s,
             self.overlap_end_s,
@@ -318,12 +399,9 @@ pub fn write_report_artifacts(directory: &Path, report: &CorrelationReport, alig
     fs::write(directory.join("metrics.csv"), report.metrics_csv())?;
     let mut timeseries = String::from("time_s");
     for mapping in &aligned.mappings {
-        write!(
-            timeseries,
-            ",reference_{},candidate_{},error_{}",
-            mapping.output_name, mapping.output_name, mapping.output_name
-        )
-        .unwrap();
+        for prefix in ["reference", "candidate", "error"] {
+            write!(timeseries, ",{}", csv_escape(&format!("{prefix}_{}", mapping.output_name))).unwrap();
+        }
     }
     timeseries.push('\n');
     for index in 0..aligned.time_s.len() {

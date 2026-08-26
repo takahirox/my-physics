@@ -1,6 +1,7 @@
 use my_physics::correlation::{
     AlignmentSpec, ChannelMapping, ClockCorrection, CorrelationError, CorrelationPurpose, CsvTelemetryAdapter,
-    DatasetFormat, DatasetManifest, FieldRole, TelemetryAdapter, align_and_resample, evaluate, write_report_artifacts,
+    DatasetFormat, DatasetManifest, FieldRole, TelemetryAdapter, align_and_resample, evaluate, verify_file_checksum,
+    write_report_artifacts,
 };
 use std::env;
 use std::fs;
@@ -45,6 +46,19 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
         reference_manifest.require_license_for_publication()?;
     }
     reference_manifest.require_purpose(arguments.purpose)?;
+    let requested_clock_correction = arguments.reference_offset_s != 0.0
+        || arguments.candidate_offset_s != 0.0
+        || arguments.reference_clock_scale != 1.0
+        || arguments.candidate_clock_scale != 1.0
+        || arguments.reference_latency_s != 0.0
+        || arguments.candidate_latency_s != 0.0;
+    if arguments.purpose != CorrelationPurpose::ParameterFitting && requested_clock_correction {
+        return Err(CorrelationError::SplitViolation(
+            "clock overrides are fitting parameters; validation/final evaluation requires default clocks until a frozen correction is carried by the manifest"
+                .to_owned(),
+        )
+        .into());
+    }
     let adapter = CsvTelemetryAdapter;
     if reference_manifest.format != DatasetFormat::Csv || candidate_manifest.format != DatasetFormat::Csv {
         return Err(CorrelationError::AdapterUnavailable(
@@ -52,6 +66,8 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
+    verify_file_checksum(&arguments.reference_path, &reference_manifest.content_checksum)?;
+    verify_file_checksum(&arguments.candidate_path, &candidate_manifest.content_checksum)?;
     let reference = adapter.read_path(&arguments.reference_path, &reference_manifest)?;
     let candidate = adapter.read_path(&arguments.candidate_path, &candidate_manifest)?;
     let mappings = build_mappings(&reference_manifest, &candidate_manifest, &arguments.channels)?;
@@ -75,8 +91,8 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
         arguments.report_id,
         arguments.purpose,
         &reference_manifest,
-        candidate_manifest.dataset_id,
-        candidate_manifest.provenance.revision,
+        &candidate_manifest,
+        candidate_manifest.provenance.revision.clone(),
         &aligned,
     )?;
     write_report_artifacts(&arguments.output, &report, &aligned)?;

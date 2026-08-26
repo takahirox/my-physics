@@ -94,6 +94,16 @@ fn manifest_round_trip_preserves_schema_provenance_and_frozen_revisions() {
 }
 
 #[test]
+fn manifest_requires_checksum_and_coordinate_frame() {
+    let mut value = manifest("run-a", DatasetSplit::Training, "journey-a");
+    value.content_checksum.clear();
+    assert!(value.validate().is_err());
+    value.content_checksum = "sha256:fixture".to_owned();
+    value.fields[1].frame.0.clear();
+    assert!(value.validate().is_err());
+}
+
+#[test]
 fn csv_adapter_applies_only_declared_affine_and_unwrap_transforms() {
     let manifest = manifest("run-a", DatasetSplit::Training, "journey-a");
     let path = write_temp("transform.csv", "Time,Speed mph,Steering wrapped deg\n0.0,10,350\n0.1,20,355\n0.2,30,2\n");
@@ -102,6 +112,33 @@ fn csv_adapter_applies_only_declared_affine_and_unwrap_transforms() {
     assert!(table.channels["steering_rad"][0].abs() < 1.0e-12);
     assert!((table.channels["steering_rad"][1] - 5_f64.to_radians()).abs() < 1.0e-12);
     assert!((table.channels["steering_rad"][2] - 12_f64.to_radians()).abs() < 1.0e-12);
+}
+
+#[test]
+fn relative_sensor_time_avoids_large_time_of_day_endpoint_roundoff() {
+    let mut manifest = manifest("time-of-day", DatasetSplit::Test, "journey-time");
+    manifest.fields[0].transform = ValueTransform::RelativeAffine { scale: 1.0, offset: 0.0 };
+    let path = write_temp(
+        "time-of-day.csv",
+        "Time,Speed mph,Steering wrapped deg\n66233.1,10,0\n66233.2,11,0\n66233.3,12,0\n",
+    );
+    let table = CsvTelemetryAdapter.read_path(&path, &manifest).unwrap();
+    assert_eq!(table.time_s[0], 0.0);
+    let mut mapping = ChannelMapping::same("speed_mps", "m/s");
+    mapping.normalization_scale = 10.0;
+    let aligned = align_and_resample(
+        &table,
+        &table,
+        &AlignmentSpec {
+            revision: "time-of-day-v1".to_owned(),
+            sample_period_s: 0.1,
+            reference_clock: ClockCorrection::default(),
+            candidate_clock: ClockCorrection::default(),
+            mappings: vec![mapping],
+        },
+    )
+    .unwrap();
+    assert_eq!(aligned.time_s.len(), 3);
 }
 
 #[test]
@@ -164,6 +201,8 @@ fn report_metrics_are_deterministic_and_name_the_dataset_split_and_revisions() {
         write_temp("metrics-candidate.csv", "Time,Speed mph,Steering wrapped deg\n0.0,0,0\n0.1,8,0\n0.2,18,0\n");
     let reference = CsvTelemetryAdapter.read_path(&reference_path, &manifest).unwrap();
     let candidate = CsvTelemetryAdapter.read_path(&candidate_path, &manifest).unwrap();
+    let mut speed_mapping = ChannelMapping::same("speed_mps", "m/s");
+    speed_mapping.lag_search_bound_s = 0.2;
     let aligned = align_and_resample(
         &reference,
         &candidate,
@@ -172,18 +211,26 @@ fn report_metrics_are_deterministic_and_name_the_dataset_split_and_revisions() {
             sample_period_s: 0.1,
             reference_clock: ClockCorrection::default(),
             candidate_clock: ClockCorrection::default(),
-            mappings: vec![ChannelMapping::same("speed_mps", "m/s")],
+            mappings: vec![speed_mapping],
         },
     )
     .unwrap();
     let report =
-        evaluate("holdout-report", CorrelationPurpose::FinalEvaluation, &manifest, "sim-fixture", "sim-v1", &aligned)
+        evaluate("holdout-report", CorrelationPurpose::FinalEvaluation, &manifest, &manifest, "sim-v1", &aligned)
             .unwrap();
     assert_eq!(report.reference_split, "test");
     assert_eq!(report.mapping_revision, "fixture-map-v1");
     assert_eq!(report.alignment_revision, "fixture-align-v1");
     assert!(report.channel_metrics["speed_mps"].rmse > 0.0);
+    assert!(report.channel_metrics["speed_mps"].best_lag_s.is_some(), "negative lag candidates must not panic");
     assert_eq!(report.to_json(), report.to_json());
+
+    let mut empty = aligned.clone();
+    empty.mappings.clear();
+    assert!(evaluate("empty", CorrelationPurpose::FinalEvaluation, &manifest, &manifest, "v1", &empty).is_err());
+    let mut overflow = aligned;
+    overflow.candidate.get_mut("speed_mps").unwrap()[1] = 1.0e308;
+    assert!(evaluate("overflow", CorrelationPurpose::FinalEvaluation, &manifest, &manifest, "v1", &overflow).is_err());
 }
 
 #[test]
@@ -211,4 +258,8 @@ fn fitted_parameter_provenance_can_only_name_training_data() {
     artifact.parameters[0].source_split = Some(DatasetSplit::Training);
     artifact.validate().unwrap();
     assert!(artifact.to_text().unwrap().contains("parameter=chassis.mass_kg"));
+
+    artifact.parameters[0].origin = EstimateOrigin::Derived;
+    artifact.parameters[0].source_split = Some(DatasetSplit::Validation);
+    assert!(artifact.validate().is_err());
 }

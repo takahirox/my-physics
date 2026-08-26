@@ -4,19 +4,25 @@ use std::fmt::Write as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EstimateOrigin {
+    DatasetMeasured,
+    Manufacturer,
     Literature,
     Estimated,
     Derived,
     Fitted,
+    Assumed,
 }
 
 impl EstimateOrigin {
     pub fn name(self) -> &'static str {
         match self {
+            Self::DatasetMeasured => "dataset-measured",
+            Self::Manufacturer => "manufacturer",
             Self::Literature => "literature",
             Self::Estimated => "estimated",
             Self::Derived => "derived",
             Self::Fitted => "fitted",
+            Self::Assumed => "assumed",
         }
     }
 }
@@ -83,6 +89,14 @@ impl ParameterEstimateArtifact {
             if parameter.origin == EstimateOrigin::Fitted && parameter.source_split != Some(DatasetSplit::Training) {
                 return Err(CorrelationError::SplitViolation(format!(
                     "fitted parameter {:?} must be derived from training split only",
+                    parameter.parameter
+                )));
+            }
+            if matches!(parameter.origin, EstimateOrigin::Derived | EstimateOrigin::Estimated)
+                && parameter.source_split.is_some_and(|split| split != DatasetSplit::Training)
+            {
+                return Err(CorrelationError::SplitViolation(format!(
+                    "derived/estimated parameter {:?} may not cite validation or test data",
                     parameter.parameter
                 )));
             }

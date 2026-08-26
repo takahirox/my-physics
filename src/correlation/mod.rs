@@ -5,12 +5,14 @@
 //! declared data splits, and reports errors with reproducible provenance.
 
 mod alignment;
+mod checksum;
 mod csv;
 mod manifest;
 mod parameter;
 mod report;
 
 pub use alignment::{AlignedSeries, AlignmentSpec, ChannelMapping, ClockCorrection, align_and_resample};
+pub use checksum::{sha256_hex, verify_file_checksum};
 pub use csv::{CsvTelemetryAdapter, TelemetryAdapter};
 pub use manifest::{
     CorrelationPurpose, DatasetFormat, DatasetManifest, DatasetSplit, FieldRole, FieldSchema, Frame, ManifestCatalog,

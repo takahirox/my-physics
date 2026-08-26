@@ -1,9 +1,17 @@
 # Real-world correlation framework
 
-This application-layer framework compares licensed measured telemetry with an
-unmodified simulation. It does not add correction forces, state nudging, or a
-dataset branch to the physical plant. State may be initialized at `t0`; every
-later sample is produced by the ordinary 1 ms simulation and declared inputs.
+This application-layer framework compares measured telemetry with a declared
+candidate time series. The generic `correlate-telemetry` command is deliberately
+only a strict comparator: it does **not** prove that an arbitrary candidate CSV
+was produced by `PhysicsWorld`. A provider-specific runner must establish that
+execution provenance.
+
+The IO-VNBD workflow in [`validation/io_vnbd`](../validation/io_vnbd/README.md)
+does so: `correlate-io-vnbd` verifies the pinned raw SHA-256 and exact 29-column
+header, pre-rolls a neutral common-plant vehicle, initializes measured state at
+`t0`, and then runs fixed 1 ms physics from declared inputs with no later state
+nudging or correction force. It emits fingerprints for the applied 1 ms input
+sequence, normalized reference table, and baseline/calibrated outputs.
 
 ## Reproducibility contract
 
@@ -23,11 +31,17 @@ non-monotonic timestamps, undeclared gaps and non-finite values. Parquet and
 provider-specific formats implement the same `TelemetryAdapter` boundary; the
 core deliberately does not guess a Parquet schema or silently reinterpret a
 column.
+Both generic input files are verified against a declared lowercase
+`sha256:<hex>` checksum before parsing; unsupported checksum schemes are
+rejected rather than trusted.
 
 Clock alignment permits only a declared bounded affine correction (scale
 0.98–1.02, offset within ±60 s) and non-negative declared latency up to 5 s.
 There is no DTW or signal-dependent time warp. The comparison grid covers only
 the common time interval and never extrapolates.
+Clock values used for a report are serialized. Generic command-line clock
+overrides are fitting-only; validation and final evaluation reject them until
+a future manifest revision can carry a frozen calibration correction.
 
 ## Split policy
 
@@ -55,8 +69,9 @@ bounded informational best lag, and reference coverage. The best-lag result is
 diagnostic only: it never shifts the samples used by the error metrics. A
 cross-channel aggregate is formed only from RMSE divided by each channel's
 explicit normalization scale, so dimensional errors are never added together.
-Reports identify the source checksum, vehicle/session/split,
-candidate revision, mapping/alignment/filter revisions and license status.
+Reports identify reference and candidate checksums, vehicle/session/split and
+candidate provenance, the clocks actually used, mapping/alignment/filter
+revisions and license status. Candidate and reference splits must match.
 
 ```text
 cargo run --release --bin correlate-telemetry -- \

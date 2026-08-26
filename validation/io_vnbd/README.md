@@ -65,6 +65,11 @@ estimate, or a calibration fit, but each must retain the corresponding
 `published`, `assumed`, `estimated` or `fitted` provenance. It must never be
 relabeled as a dataset measurement.
 
+The frozen per-parameter implementation ledger is
+[`reference-vehicle.tsv`](reference-vehicle.tsv). The measured correlation
+baseline, including unfavorable holdout results, is recorded in
+[`results-v1.md`](results-v1.md).
+
 The common plant must use its ordinary front-driven-wheel configuration for
 this vehicle. IO-VNBD-specific yaw corrections, grip multipliers, damping,
 steering assists, state nudging or force branches are prohibited. Sensor bias,
@@ -226,7 +231,8 @@ For scientific separation, prefer three calls in the protocol order using
 runner writes deterministic per-run artifacts below
 `<output>/<split>/<run-id>/`: `correlation-report.json`, `metrics.csv`,
 `aligned-timeseries.csv` and `simulation.csv`. The output root also contains
-`summary.json`, `parameter-estimates.manifest` and `limitations.md`. These
+`summary.json`, split-specific summaries, `parameter-estimates.manifest`,
+`fit-trace.csv` and `limitations.md`. These
 artifacts, the my-physics Git revision and the acquisition manifest revision
 together identify a result.
 

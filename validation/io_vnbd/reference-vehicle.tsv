@@ -1,0 +1,41 @@
+# Frozen Fiesta Titanium FWD proxy parameter ledger v1. This is not an exact-vehicle claim.
+parameter	value	unit	origin	source_split	source_or_basis	uncertainty
+layout.front_wheel_drive	1	boolean	published	none	Onyekpe et al. 2021 identifies the CAN vehicle as FWD Ford Fiesta Titanium	exact model-year/variant unresolved
+chassis.dry_mass	1150	kg	estimated	none	Fiesta-class proxy	test mass and loading unmeasured
+chassis.cg_local	0	m	assumed	none	neutral CG-origin proxy	CG coordinates unmeasured
+chassis.inertia_roll	420	kg*m^2	estimated	none	Fiesta-class rigid-body proxy	unmeasured
+chassis.inertia_pitch	1250	kg*m^2	estimated	none	Fiesta-class rigid-body proxy	unmeasured
+chassis.inertia_yaw	1350	kg*m^2	estimated	none	Fiesta-class rigid-body proxy	unmeasured
+geometry.wheelbase	2.489	m	manufacturer-analogue	none	2015 Ford Fiesta specification; not exact variant confirmation	generation assumption
+geometry.front_track	1.470	m	manufacturer-analogue	none	2015 Ford Fiesta specification; not exact variant confirmation	generation assumption
+sensor.yaw_bias	0.05955	deg/s	fitted	calibration V-Vw1	stationary mean	stationary-run estimate
+sensor.longitudinal_acceleration_bias	-0.04107	g	fitted	calibration V-Vw1	stationary mean	stationary-run estimate
+sensor.lateral_acceleration_bias	0.03206	g	fitted	calibration V-Vw1	stationary mean	stationary-run estimate
+sensor.brake_pressure_bias	-0.0076	psi	fitted	calibration V-Vw1	stationary mean; adapter adds 0.0076 psi	stationary-run estimate
+wheel.effective_rolling_radius	0.278756	m	fitted	calibration V-Vw12	median speed/wheel-rate ratio	MAD 0.000425 m
+steering.maximum_road_wheel_angle	0.54	rad	assumed	none	Fiesta proxy steering travel	unobserved
+steering.ratio	14.5	ratio	assumed	none	frozen input reconstruction proxy	sensor location and ratio unresolved
+steering.sensor_zero	4.8	deg	assumed	calibration-stage decision	adapter subtracts fixed 4.8 degrees	not independently identifiable
+suspension.spring_rate	40000	N/m	estimated	none	common engineering-reference proxy	not fitted
+suspension.damper_rate	4200	N*s/m	estimated	none	common engineering-reference proxy	not fitted
+brakes.front_capacity	2300	N*m	estimated	none	Fiesta-class brake proxy	not fitted
+brakes.rear_capacity	1300	N*m	estimated	none	Fiesta-class brake proxy	not fitted
+input.brake_full_scale	80	psi	assumed	calibration-stage decision	fixed input normalization	not hydraulic-system identification
+aerodynamics.frontal_area	2.10	m^2	estimated	none	Fiesta-class proxy	unmeasured
+aerodynamics.drag_coefficient	0.33	ratio	estimated	none	Fiesta-class proxy	unmeasured
+aerodynamics.lift_coefficient	0	ratio	assumed	none	neutral aero proxy	unmeasured
+engine.idle_speed	800	rpm	estimated	none	authored small-ICE proxy	exact engine unknown
+engine.redline	6500	rpm	estimated	none	authored small-ICE proxy	exact engine unknown
+engine.peak_torque	125	N*m	estimated	none	authored small-ICE proxy curve	not dyno-fitted
+transmission.final_drive	3.89	ratio	manufacturer-analogue	none	analogous 2015 Fiesta PowerShift specification	exact factorization unresolved
+transmission.gear1_ratio	3.917	ratio	manufacturer-analogue	none	analogous 2015 Fiesta PowerShift; unobserved in calibration	exact gearbox unresolved
+driveline.overall_ratio.gear2	9.3659	ratio	fitted	calibration V-Vw12+V-Vfb02c	robust engine/wheel ratio	gearbox and final drive not separately identifiable
+driveline.overall_ratio.gear3	6.4020	ratio	fitted	calibration V-Vw12+V-Vfb02c	robust engine/wheel ratio	gearbox and final drive not separately identifiable
+driveline.overall_ratio.gear4	4.4083	ratio	fitted	calibration V-Vw12+V-Vfb02c	robust engine/wheel ratio	gearbox and final drive not separately identifiable
+driveline.overall_ratio.gear5	3.1507	ratio	fitted	calibration V-Vw12+V-Vfb02c	robust engine/wheel ratio	gearbox and final drive not separately identifiable
+driveline.overall_ratio.gear6	2.6001	ratio	fitted	calibration V-Vw12+V-Vfb02c	robust engine/wheel ratio	gearbox and final drive not separately identifiable
+clutch.torque_capacity	300	N*m	estimated	none	Fiesta-class clutch proxy	not fitted
+tire.cornering_stiffness_scale	1	ratio	assumed	none	common reference tire retained	tire construction unobserved; not fitted
+tire.peak_grip_scale	1	ratio	assumed	none	common reference tire retained	surface and tire unobserved; not fitted
+fuel.capacity	35	kg	estimated	none	Fiesta proxy	unmeasured
+fuel.initial_mass	30	kg	assumed	none	fixed consistent t0 initialization	fuel load unmeasured

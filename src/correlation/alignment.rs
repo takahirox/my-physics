@@ -208,9 +208,11 @@ pub fn align_and_resample(
 }
 
 fn interpolate(time: &[f64], values: &[f64], query: f64, resampling: Resampling) -> Result<f64> {
-    if query < time[0] - 1.0e-12 || query > time[time.len() - 1] + 1.0e-12 {
+    let tolerance = 1.0e-9 + 64.0 * f64::EPSILON * query.abs().max(time[time.len() - 1].abs());
+    if query < time[0] - tolerance || query > time[time.len() - 1] + tolerance {
         return Err(CorrelationError::InvalidAlignment(format!("query {query} requires extrapolation")));
     }
+    let query = query.clamp(time[0], time[time.len() - 1]);
     match time.binary_search_by(|value| value.total_cmp(&query)) {
         Ok(index) => Ok(values[index]),
         Err(0) => Ok(values[0]),

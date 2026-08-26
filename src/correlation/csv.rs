@@ -115,6 +115,7 @@ pub fn parse_csv(text: &str, manifest: &DatasetManifest) -> Result<TelemetryTabl
 
 #[derive(Clone, Copy, Debug, Default)]
 struct TransformState {
+    first_raw: Option<f64>,
     previous_raw: Option<f64>,
     previous_unwrapped: f64,
     first_unwrapped: f64,
@@ -125,6 +126,10 @@ impl TransformState {
         let value = match transform {
             ValueTransform::Identity => raw,
             ValueTransform::Affine { scale, offset } => raw * scale + offset,
+            ValueTransform::RelativeAffine { scale, offset } => {
+                let first = *self.first_raw.get_or_insert(raw);
+                (raw - first) * scale + offset
+            }
             ValueTransform::UnwrapAffine { period, scale, offset, relative_to_first } => {
                 let unwrapped = if let Some(previous_raw) = self.previous_raw {
                     let mut delta = raw - previous_raw;

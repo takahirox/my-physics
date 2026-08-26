@@ -117,6 +117,7 @@ impl Resampling {
 pub enum ValueTransform {
     Identity,
     Affine { scale: f64, offset: f64 },
+    RelativeAffine { scale: f64, offset: f64 },
     UnwrapAffine { period: f64, scale: f64, offset: f64, relative_to_first: bool },
 }
 
@@ -125,6 +126,7 @@ impl ValueTransform {
         match self {
             Self::Identity => "identity".to_owned(),
             Self::Affine { scale, offset } => format!("affine,{scale:.17e},{offset:.17e}"),
+            Self::RelativeAffine { scale, offset } => format!("relative-affine,{scale:.17e},{offset:.17e}"),
             Self::UnwrapAffine { period, scale, offset, relative_to_first } => {
                 format!("unwrap-affine,{period:.17e},{scale:.17e},{offset:.17e},{relative_to_first}")
             }
@@ -142,6 +144,7 @@ impl ValueTransform {
         let transform = match parts.as_slice() {
             ["identity"] => Self::Identity,
             ["affine", _, _] => Self::Affine { scale: number(1)?, offset: number(2)? },
+            ["relative-affine", _, _] => Self::RelativeAffine { scale: number(1)?, offset: number(2)? },
             ["unwrap-affine", _, _, _, relative] => Self::UnwrapAffine {
                 period: number(1)?,
                 scale: number(2)?,
@@ -155,6 +158,7 @@ impl ValueTransform {
         match transform {
             Self::Identity => {}
             Self::Affine { scale, offset } if scale.is_finite() && offset.is_finite() && scale != 0.0 => {}
+            Self::RelativeAffine { scale, offset } if scale.is_finite() && offset.is_finite() && scale != 0.0 => {}
             Self::UnwrapAffine { period, scale, offset, .. }
                 if period.is_finite() && period > 0.0 && scale.is_finite() && scale != 0.0 && offset.is_finite() => {}
             _ => return Err(CorrelationError::InvalidManifest(format!("non-finite/degenerate transform {value:?}"))),
@@ -299,6 +303,7 @@ impl DatasetManifest {
         }
         for (label, value) in [
             ("dataset_id", &self.dataset_id),
+            ("content_checksum", &self.content_checksum),
             ("source_title", &self.source_title),
             ("source_uri", &self.source_uri),
             ("vehicle_id", &self.vehicle_id),
@@ -357,6 +362,7 @@ impl DatasetManifest {
             if field.canonical_name.trim().is_empty()
                 || field.source_column.trim().is_empty()
                 || field.unit.0.trim().is_empty()
+                || field.frame.0.trim().is_empty()
             {
                 return Err(CorrelationError::InvalidManifest("field names and units must not be empty".to_owned()));
             }
