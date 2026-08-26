@@ -68,7 +68,9 @@ relabeled as a dataset measurement.
 The frozen per-parameter implementation ledger is
 [`reference-vehicle.tsv`](reference-vehicle.tsv). The measured correlation
 baseline, including unfavorable holdout results, is recorded in
-[`results-v1.md`](results-v1.md).
+[`results-v1.md`](results-v1.md). The corrected common-plant/input-map
+iteration, validation selection and independently registered final suite are
+recorded without replacing v1 in [`results-v2.md`](results-v2.md).
 
 The common plant must use its ordinary front-driven-wheel configuration for
 this vehicle. IO-VNBD-specific yaw corrections, grip multipliers, damping,
@@ -158,7 +160,9 @@ not rows or windows from a run, are the unit of separation.
 |---|---|---|
 | Calibration | `V-Vw1`, `V-Vw12`, `V-Vfb02c` | stationary sensor bias; steady/straight driveline observations; U-turn and hard-brake steering/brake excitation |
 | Validation | `V-Vw7`, `V-Vw16b` | successive-turn model selection; independent straight hard-brake check |
-| Holdout | `V-Vta1b`, `V-vtb12` | final wet/muddy braking and wet/night roundabout evaluation after parameters and mappings are frozen |
+| Historical holdout | `V-Vta1b`, `V-vtb12` | preserved wet/muddy braking and wet/night roundabout evaluation |
+| Post-observation regression | `V-Vta14`, `V-Vta30`, `V-Vfb02g` | useful regression runs, but not independent final evidence because common-plant fixes followed their first opening |
+| Sealed independent final | `V-Vw3`, `V-Vtb8` | registered with frozen longitudinal policy; run only once from the clean committed source |
 | CI smoke only | `V-Vw17` | short parser/simulation/report path; never parameter fitting or final evidence |
 
 The split exercises longitudinal and lateral behavior while keeping every run
@@ -177,6 +181,11 @@ Selected raw-file audit at the pinned snapshot (GPS coordinates excluded):
 | `V-Vw16b` | 1,126 | 112.5 | 1.57–85.89 | hard-brake excitation; brake pressure reaches about 78 psi |
 | `V-Vta1b` | 953 | 95.2 | 0.00–77.91 | steering is exactly zero throughout; do not score steering response |
 | `V-vtb12` | 447 | 44.6 | 22.50–71.38 | wet roundabout lateral holdout |
+| `V-Vta14` | 2,893 | 289.2 | 52.8–91.0 | hard braking/rapid acceleration; steering exactly zero, longitudinal final only |
+| `V-Vta30` | 17,179 | 1,717.8 | 0.0–100.0 | wet mixed route; requested gear 14 anomaly and unresolved unilateral steering |
+| `V-Vfb02g` | 27,159 | 2,715.8 | 0.0–119.4 | broad endurance route; unresolved unilateral steering |
+| `V-Vw3` | 3,861 | 386.0 | not opened | sealed synchronized final; raw count differs from the paper's 3,942-row unsynchronized catalog entry |
+| `V-Vtb8` | 699 | 69.8 | not opened | sealed wet-night approximately straight A5 final |
 
 These are descriptive checks, not acceptance thresholds. Missing/unusable
 channels are excluded with a recorded reason, never replaced with fabricated
@@ -216,15 +225,20 @@ controls the Git/LFS cache. The default output is under the ignored `target/`
 tree, and the repository-wide `*.csv` ignore rule is an additional guard
 against accidentally staging raw or generated telemetry.
 
-Run the complete IO-specific workflow with an external or ignored data root:
+Run a non-final portion of the IO-specific workflow with an external or
+ignored data root:
 
 ```sh
-scripts/fetch-io-vnbd.sh /path/to/io-vnbd-data
+scripts/fetch-io-vnbd.sh /path/to/io-vnbd-data --split calibration
 cargo run --release --bin correlate-io-vnbd -- \
   --data-root /path/to/io-vnbd-data \
   --output target/io-vnbd-correlation \
-  --split all
+  --split calibration
 ```
+
+`--split all` now includes the sealed `V-Vw3`/`V-Vtb8` final suite. Do not run
+that command before the clean source commit is frozen and the one-time final
+opening is authorized. Calibration and Validation commands do not open it.
 
 For scientific separation, prefer three calls in the protocol order using
 `--split calibration`, then `validation`, then `holdout`. The correlation
@@ -232,9 +246,37 @@ runner writes deterministic per-run artifacts below
 `<output>/<split>/<run-id>/`: `correlation-report.json`, `metrics.csv`,
 `aligned-timeseries.csv` and `simulation.csv`. The output root also contains
 `summary.json`, split-specific summaries, `parameter-estimates.manifest`,
-`fit-trace.csv` and `limitations.md`. These
+`fit-trace.csv`, raw-derived `fit-diagnostics.json` and `limitations.md`. The
+brake diagnostic is intentionally recomputed only when the hash-verified
+calibration raw is available; a source-free CI run cannot substantiate it.
+Verify it explicitly with:
+
+```sh
+scripts/fetch-io-vnbd.sh --verify-only --output /path/to/io-vnbd-data --split calibration
+cargo run --release --bin correlate-io-vnbd -- \
+  --data-root /path/to/io-vnbd-data \
+  --output target/io-vnbd-brake-fit-check \
+  --split calibration --run-id V-Vfb02c
+```
+
+These
 artifacts, the my-physics Git revision and the acquisition manifest revision
 together identify a result.
+
+The two calibration-derived accelerator-map candidates can be reproduced on
+Validation from the same source and common plant:
+
+```sh
+cargo run --release --bin correlate-io-vnbd -- \
+  --data-root /path/to/io-vnbd-data --output target/io-vnbd-exp030 \
+  --split validation --pedal-exponent 0.30
+cargo run --release --bin correlate-io-vnbd -- \
+  --data-root /path/to/io-vnbd-data --output target/io-vnbd-exp035 \
+  --split validation --pedal-exponent 0.35
+```
+
+The runner rejects exponent 0.35 for `holdout` or `all`; only the selected and
+frozen 0.30 model may open final data.
 
 ## Calibration, validation and holdout protocol
 
@@ -246,10 +288,11 @@ together identify a result.
    filtering, physical parameters and optimizer settings.
 4. Evaluate `V-Vw7` and `V-Vw16b`. Model changes selected from those results
    create a new revision and require validation to be rerun.
-5. Open and evaluate `V-Vta1b` and `V-vtb12` once for the final report. A model
-   changed after inspecting holdout is a new experiment; the old holdout result
-   remains in history and new independent data are needed for an uncontaminated
-   final claim.
+5. Preserve the historical `V-Vta1b`/`V-vtb12` and post-observation regression
+   `V-Vta14`/`V-Vta30`/`V-Vfb02g` results. They are not independent final
+   evidence because common-plant corrections followed observation. After the
+   source is committed and clean, evaluate sealed `V-Vw3` and `V-Vtb8` once.
+   Any subsequent model change requires another independent suite.
 
 Each maneuver starts from its measured initial speed, wheel speeds, actual gear
 and engine speed where valid. Later state is produced by the common deterministic
@@ -272,6 +315,14 @@ longitudinal and lateral acceleration, yaw rate, four wheel speeds and engine
 RPM. Gear, pedal/clutch/brake signals are primarily reconstructed inputs or
 contexts; response is assessed in the output signals. `V-Vta1b` has no usable
 steering-angle excitation even though it remains valuable longitudinal holdout.
+The frozen longitudinal policy for post-observation regressions and the sealed
+final suite includes only indicated/GPS speed,
+longitudinal acceleration and four wheel speeds, plus RPM on five-sample stable
+valid-gear windows. Steering, yaw and lateral acceleration are excluded from
+all such runs because the unilateral/zero steering encoding is unresolved;
+gear fields are context only. The runner records these exclusions in
+`longitudinal-evidence-score.json` rather than choosing channels after seeing a
+simulation residual.
 
 Do not invent a “pass” threshold from the observed error. Report the baseline
 objectively, both before and after calibration, and retain both artifacts. The

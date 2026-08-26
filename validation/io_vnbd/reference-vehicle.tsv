@@ -1,4 +1,4 @@
-# Frozen Fiesta Titanium FWD proxy parameter ledger v1. This is not an exact-vehicle claim.
+# Frozen Fiesta Titanium FWD proxy and input/observation ledger v2. This is not an exact-vehicle claim.
 parameter	value	unit	origin	source_split	source_or_basis	uncertainty
 layout.front_wheel_drive	1	boolean	published	none	Onyekpe et al. 2021 identifies the CAN vehicle as FWD Ford Fiesta Titanium	exact model-year/variant unresolved
 chassis.dry_mass	1150	kg	estimated	none	Fiesta-class proxy	test mass and loading unmeasured
@@ -20,7 +20,11 @@ suspension.spring_rate	40000	N/m	estimated	none	common engineering-reference pro
 suspension.damper_rate	4200	N*s/m	estimated	none	common engineering-reference proxy	not fitted
 brakes.front_capacity	2300	N*m	estimated	none	Fiesta-class brake proxy	not fitted
 brakes.rear_capacity	1300	N*m	estimated	none	Fiesta-class brake proxy	not fitted
-input.brake_full_scale	80	psi	assumed	calibration-stage decision	fixed input normalization	not hydraulic-system identification
+input.accelerator_effective_exponent	0.30	ratio	fitted	calibration V-Vw12+V-Vfb02c	calibration log/log inverse-balance medians 0.294/0.384; validation separately retained 0.30 over 0.35	conditional on authored engine torque curve; not throttle-plate identification
+input.brake_position_zoh_gate	1	boolean	derived	calibration V-Vw1+V-Vw12	pressure admitted only while discrete brake position is active	prevents source pressure noise becoming a physical command
+input.brake_effective_full_scale	200	psi	fitted	calibration V-Vfb02c	n=134 OLS slope 0.010441102 g/psi; combined proxy equivalent 213.776 psi	provisional 190-250 psi; pressure map/brake capacity/radius/mass not separately identifiable
+observation.body_acceleration_boxcar	0.100	s	derived	calibration-stage sensor-adapter decision	mean of all 100 ordinary 1 ms plant acceleration samples per source interval	matches 10 Hz source bandwidth; does not alter plant state
+observation.score_start	0.1	s	derived	calibration-stage sensor-adapter decision	t0 initializes state; first score follows one complete physical sensor interval	v1 included stale pre-roll t0 and last-step acceleration
 aerodynamics.frontal_area	2.10	m^2	estimated	none	Fiesta-class proxy	unmeasured
 aerodynamics.drag_coefficient	0.33	ratio	estimated	none	Fiesta-class proxy	unmeasured
 aerodynamics.lift_coefficient	0	ratio	assumed	none	neutral aero proxy	unmeasured

@@ -614,8 +614,8 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             let contact_velocity = v.state.linear_velocity_mps + v.state.angular_velocity_rad_s.cross(r);
             let longitudinal = contact_velocity.dot(wheel_forward);
             let lateral = contact_velocity.dot(wheel_right);
-            ws.longitudinal_slip =
-                (ws.angular_velocity_rad_s * effective_radius - longitudinal) / longitudinal.abs().max(1.0);
+            let wheel_surface_speed = ws.angular_velocity_rad_s * effective_radius;
+            ws.longitudinal_slip = (wheel_surface_speed - longitudinal) / longitudinal.abs().max(1.0);
             ws.slip_angle_rad = lateral.atan2(longitudinal.abs().max(0.2));
             let fitted_tire_model = MagicFormulaTire {
                 lateral_stiffness: tire_model.lateral_stiffness * wdef.cornering_stiffness_scale.clamp(0.5, 2.0),
@@ -636,7 +636,7 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
                 ws.relaxation_length_m,
                 dt * lod_stride,
             );
-            let tire = evaluate_tire(
+            let mut tire = evaluate_tire(
                 &fitted_tire_model,
                 &mut ws.tire,
                 TireInput {
@@ -652,12 +652,35 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
                     dt: dt * lod_stride,
                 },
             );
+            // The Magic-Formula force is quasi-static, while wheel and chassis
+            // speeds are integrated explicitly. Near rest its small-slip
+            // stiffness can otherwise reverse contact relative velocity in a
+            // single 1 ms step and excite a non-physical limit cycle. Bound
+            // the force by the impulse that can bring relative surface speed
+            // to zero, but never through zero. At ordinary speed/slip the tire
+            // friction envelope is lower, so this bound is inactive.
+            let relative_surface_speed = wheel_surface_speed - longitudinal;
+            let effective_inverse_mass = effective_radius * effective_radius / wdef.inertia_kg_m2 + 4.0 / mass.max(1.0);
+            let contact_speed = longitudinal.abs().max(wheel_surface_speed.abs());
+            let mut no_reversal_force = low_speed_no_reversal_force_limit(
+                relative_surface_speed,
+                contact_speed,
+                dt * lod_stride,
+                effective_inverse_mass,
+            );
+            if v.control.brake_per_wheel[n] > 0.0 && contact_speed < 1.0 {
+                // The brake complementarity below may hold omega exactly zero,
+                // so do not use the free-wheel relaxation near the final stop.
+                // The strict bound remains conservative with the four-wheel
+                // chassis coupling and prevents a post-stop chassis reversal.
+                let strict_limit =
+                    relative_surface_speed.abs() / ((dt * lod_stride) * effective_inverse_mass).max(1.0e-12);
+                no_reversal_force = no_reversal_force.min(strict_limit);
+            }
+            tire.longitudinal_force_n = tire.longitudinal_force_n.clamp(-no_reversal_force, no_reversal_force);
             ws.last_tire_output = tire;
-            let rr_sign =
-                if longitudinal.abs() > 0.1 { longitudinal.signum() } else { ws.angular_velocity_rad_s.signum() };
-            let wheel_force = road_normal * normal
-                + wheel_forward * (tire.longitudinal_force_n - tire.rolling_resistance_n * rr_sign)
-                + wheel_right * tire.lateral_force_n;
+            let wheel_force =
+                road_normal * normal + wheel_forward * tire.longitudinal_force_n + wheel_right * tire.lateral_force_n;
             force += wheel_force;
             torque += r.cross(wheel_force) + road_normal * tire.aligning_moment_nm;
             let driven =
@@ -665,16 +688,30 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             let brake_effect =
                 (1.0 - 0.72 * ((ws.brake_temperature_k - 850.0) / 300.0).clamp(0.0, 1.0)) * (1.0 - 0.7 * ws.brake_wear);
             let brake_torque = v.control.brake_per_wheel[n] * wdef.brake_torque_nm * brake_effect;
-            let omega_sign = if ws.angular_velocity_rad_s.abs() > 0.1 {
-                ws.angular_velocity_rad_s.signum()
-            } else {
-                longitudinal.signum()
-            };
-            let angular_accel = (driven - tire.longitudinal_force_n * effective_radius - brake_torque * omega_sign)
-                / wdef.inertia_kg_m2;
+            // Rolling resistance is a dissipative wheel moment. Applying it
+            // directly to the chassis as well as omitting the wheel reaction
+            // violated wheel/chassis power balance and produced finite-force
+            // chatter from numerical omega sign changes near rest. The odd,
+            // continuous speed factor is exactly zero at rest; ordinary tire
+            // longitudinal force transmits the resulting drag to the chassis.
+            let rolling_resistance_moment = rolling_resistance_moment_nm(
+                tire.rolling_resistance_n,
+                ws.angular_velocity_rad_s * effective_radius,
+                effective_radius,
+            );
+            let unbraked_moment = driven - tire.longitudinal_force_n * effective_radius - rolling_resistance_moment;
+            // Static/kinetic brake complementarity: apply the available brake
+            // moment against the unbraked end-of-step angular momentum. If
+            // capacity is sufficient the wheel lands exactly at zero and is
+            // held there; it cannot alternate across zero or release for one
+            // step merely because omega was exactly zero.
+            let moment_to_zero =
+                ws.angular_velocity_rad_s * wdef.inertia_kg_m2 / (dt * lod_stride).max(1.0e-12) + unbraked_moment;
+            let brake_moment = moment_to_zero.clamp(-brake_torque, brake_torque);
+            let angular_accel = (unbraked_moment - brake_moment) / wdef.inertia_kg_m2;
             ws.angular_velocity_rad_s += angular_accel * dt * lod_stride;
             ws.rotation_rad = (ws.rotation_rad + ws.angular_velocity_rad_s * dt * lod_stride) % core::f64::consts::TAU;
-            let brake_power = (brake_torque * ws.angular_velocity_rad_s).abs();
+            let brake_power = (brake_moment * ws.angular_velocity_rad_s).abs();
             ws.brake_temperature_k +=
                 (brake_power * 0.00055 + (300.0 - ws.brake_temperature_k) * 0.016) * dt * lod_stride;
             ws.brake_wear = (ws.brake_wear + brake_power * 4.0e-11 * dt * lod_stride).clamp(0.0, 1.0);
@@ -711,6 +748,31 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
     }
     v.state.simulation_time_s += dt;
     v.update_telemetry((v.state.linear_velocity_mps - old_velocity) / dt);
+}
+
+/// Signed dissipative rolling-resistance moment. `surface_speed_mps` is wheel
+/// angular speed times effective radius, so the returned sign always opposes
+/// wheel rotation. The 0.1 m/s regularization removes a discontinuity at rest
+/// while retaining more than 99% of the authored high-speed resistance.
+fn rolling_resistance_moment_nm(force_n: f64, surface_speed_mps: f64, effective_radius_m: f64) -> f64 {
+    force_n.max(0.0) * effective_radius_m.max(0.0) * surface_speed_mps / (surface_speed_mps.abs() + 0.1)
+}
+
+fn low_speed_no_reversal_force_limit(
+    relative_surface_speed_mps: f64,
+    contact_speed_mps: f64,
+    dt_s: f64,
+    effective_inverse_mass: f64,
+) -> f64 {
+    if contact_speed_mps >= 1.0 {
+        return f64::INFINITY;
+    }
+    let zero_crossing_force = relative_surface_speed_mps.abs() / (dt_s * effective_inverse_mass).max(1.0e-12);
+    // Keep the exact no-crossing bound through the final 0.2 m/s, then relax
+    // continuously toward an inactive bound at 1 m/s. This exists only for the
+    // low-speed explicit contact singularity and cannot alter normal driving.
+    let relaxation = ((contact_speed_mps - 0.2) / 0.8).clamp(0.0, 1.0);
+    zero_crossing_force / (1.0 - relaxation).max(1.0e-6)
 }
 
 fn inertia_world(orientation: Quat, inertia_body: Vec3, vector_world: Vec3) -> Vec3 {
@@ -789,4 +851,202 @@ fn fingerprint_snapshot(s: &Snapshot) -> u64 {
     // hand-maintained partial fingerprint from silently omitting new state.
     let bytes = crate::archive::encode_snapshot(s);
     u64::from_le_bytes(bytes[bytes.len() - 8..].try_into().expect("snapshot archive checksum"))
+}
+
+#[cfg(test)]
+mod rolling_resistance_tests {
+    use super::*;
+    use crate::controls::DriverInput;
+
+    fn kinetic_energy(world: &PhysicsWorld) -> f64 {
+        let vehicle = &world.vehicles[0];
+        0.5 * vehicle.mass_kg() * vehicle.state.linear_velocity_mps.length_squared()
+            + vehicle
+                .state
+                .wheels
+                .iter()
+                .zip(vehicle.definition.wheels.iter())
+                .map(|(wheel, definition)| 0.5 * definition.inertia_kg_m2 * wheel.angular_velocity_rad_s.powi(2))
+                .sum::<f64>()
+    }
+
+    #[test]
+    fn rolling_resistance_moment_is_zero_at_rest_odd_and_dissipative() {
+        assert_eq!(rolling_resistance_moment_nm(100.0, 0.0, 0.3), 0.0);
+        for speed in [0.01, 0.1, 1.0, 30.0] {
+            let forward = rolling_resistance_moment_nm(100.0, speed, 0.3);
+            let reverse = rolling_resistance_moment_nm(100.0, -speed, 0.3);
+            assert_eq!(reverse, -forward);
+            assert!(forward * speed > 0.0, "resisting power must be positive before subtraction");
+        }
+        let high_speed = rolling_resistance_moment_nm(100.0, 30.0, 0.3);
+        assert!(high_speed / (100.0 * 0.3) > 0.99);
+        assert!(low_speed_no_reversal_force_limit(0.01, 2.0, 0.001, 0.08).is_infinite());
+        assert!(low_speed_no_reversal_force_limit(0.01, 0.0, 0.001, 0.08).is_finite());
+    }
+
+    #[test]
+    fn neutral_zero_input_rest_is_quiet_and_coast_energy_does_not_increase() {
+        let mut definition = VehicleDefinition::engineering_reference();
+        definition.transmission.automatic = false;
+        let mut world = PhysicsWorld::new(SimulationConfig { automatic_lod: false, ..SimulationConfig::default() });
+        world.add_vehicle(definition);
+        world.vehicles[0].state.powertrain.gear = 0;
+        world.set_input_unrecorded(0, DriverInput::default()).unwrap();
+        world.step_fixed(2_000).unwrap();
+
+        let mut sum = [0.0; 2];
+        let mut sum_square = 0.0;
+        for _ in 0..100 {
+            world.step_fixed(1).unwrap();
+            let acceleration = body_acceleration_channels_for_test(&world);
+            sum[0] += acceleration[0];
+            sum[1] += acceleration[1];
+            sum_square += acceleration[0].powi(2) + acceleration[1].powi(2);
+        }
+        let mean = [sum[0] / 100.0, sum[1] / 100.0];
+        let rms = (sum_square / 100.0).sqrt();
+        let vehicle = &world.vehicles[0];
+        let max_wheel_omega =
+            vehicle.state.wheels.iter().map(|wheel| wheel.angular_velocity_rad_s.abs()).fold(0.0, f64::max);
+        assert!(mean[0].abs() < 0.02, "mean={mean:?}, rms={rms}");
+        assert!(mean[1].abs() < 0.02, "mean={mean:?}, rms={rms}");
+        assert!(rms < 0.1, "mean={mean:?}, rms={rms}, max_wheel_omega={max_wheel_omega}");
+        assert!(vehicle.state.linear_velocity_mps.length() < 0.01);
+        assert!(vehicle.state.angular_velocity_rad_s.y.abs() < 1.0e-3);
+        assert!(max_wheel_omega < 0.1, "max_wheel_omega={max_wheel_omega}, mean={mean:?}, rms={rms}");
+
+        let speed_mps = 25.0;
+        let vehicle = &mut world.vehicles[0];
+        vehicle.state.linear_velocity_mps = Vec3::new(0.0, 0.0, -speed_mps);
+        for (wheel, definition) in vehicle.state.wheels.iter_mut().zip(vehicle.definition.wheels.iter()) {
+            wheel.angular_velocity_rad_s = speed_mps / definition.radius_m;
+        }
+        let initial_energy = kinetic_energy(&world);
+        world.step_fixed(1_000).unwrap();
+        assert!(kinetic_energy(&world) <= initial_energy * (1.0 + 1.0e-9));
+    }
+
+    #[test]
+    fn straight_coast_converges_across_half_one_and_two_millisecond_steps() {
+        fn coast(dt_s: f64) -> (f64, f64) {
+            let mut definition = VehicleDefinition::engineering_reference();
+            definition.transmission.automatic = false;
+            let mut world = PhysicsWorld::new(SimulationConfig {
+                fixed_dt_s: dt_s,
+                automatic_lod: false,
+                ..SimulationConfig::default()
+            });
+            world.add_vehicle(definition);
+            world.vehicles[0].state.powertrain.gear = 0;
+            world.set_input_unrecorded(0, DriverInput::default()).unwrap();
+            world.step_fixed((2.0 / dt_s).round() as u32).unwrap();
+            let vehicle = &mut world.vehicles[0];
+            vehicle.state.linear_velocity_mps = Vec3::new(0.0, 0.0, -25.0);
+            for (wheel, definition) in vehicle.state.wheels.iter_mut().zip(vehicle.definition.wheels.iter()) {
+                wheel.angular_velocity_rad_s = 25.0 / definition.radius_m;
+            }
+            let start_z = vehicle.state.position_m.z;
+            world.step_fixed((2.0 / dt_s).round() as u32).unwrap();
+            let vehicle = &world.vehicles[0];
+            ((vehicle.state.position_m.z - start_z).abs(), vehicle.state.linear_velocity_mps.length())
+        }
+
+        let reference = coast(0.0005);
+        for candidate in [coast(0.001), coast(0.002)] {
+            assert!(
+                (candidate.0 - reference.0).abs() / reference.0 < 0.005,
+                "reference={reference:?}, candidate={candidate:?}"
+            );
+            assert!(
+                (candidate.1 - reference.1).abs() / reference.1 < 0.005,
+                "reference={reference:?}, candidate={candidate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn brake_to_rest_converges_without_contact_or_wheel_chatter() {
+        let mut definition = VehicleDefinition::engineering_reference();
+        definition.transmission.automatic = false;
+        let mut world = PhysicsWorld::new(SimulationConfig { automatic_lod: false, ..SimulationConfig::default() });
+        world.add_vehicle(definition);
+        world.vehicles[0].state.powertrain.gear = 0;
+        world.vehicles[0].driver_aids.abs_enabled = false;
+        world.step_fixed(2_000).unwrap();
+        let vehicle = &mut world.vehicles[0];
+        vehicle.state.linear_velocity_mps = Vec3::new(0.0, 0.0, -10.0);
+        for (wheel, definition) in vehicle.state.wheels.iter_mut().zip(vehicle.definition.wheels.iter()) {
+            wheel.angular_velocity_rad_s = 10.0 / definition.radius_m;
+        }
+        world.set_input_unrecorded(0, DriverInput { brake: 1.0, ..DriverInput::default() }).unwrap();
+        let mut minimum_contact_forward_speed: f64 = f64::INFINITY;
+        let mut tail_contact_square = 0.0;
+        let mut tail_wheel_square = 0.0;
+        let mut tail_contact_peak: f64 = 0.0;
+        let mut tail_wheel_peak: f64 = 0.0;
+        let mut tail_samples = 0_u64;
+        let mut wheel_signs = [0_i8; 4];
+        let mut wheel_sign_flips = 0_u32;
+        for step in 0..20_000 {
+            world.step_fixed(1).unwrap();
+            let vehicle = &world.vehicles[0];
+            let cg = vehicle.cg_local_m();
+            for (index, definition) in vehicle.definition.wheels.into_iter().enumerate() {
+                let mount = vehicle.state.position_m + vehicle.state.orientation.rotate(definition.mount_local_m - cg);
+                let contact = Vec3::new(mount.x, 0.0, mount.z);
+                let contact_velocity = vehicle.state.linear_velocity_mps
+                    + vehicle.state.angular_velocity_rad_s.cross(contact - vehicle.state.position_m);
+                let heading = vehicle.state.orientation.rotate(Vec3::FORWARD);
+                let forward = Vec3::new(heading.x, 0.0, heading.z).normalized();
+                let contact_forward = contact_velocity.dot(forward);
+                minimum_contact_forward_speed = minimum_contact_forward_speed.min(contact_forward);
+                if step >= 15_000 {
+                    let wheel_omega = vehicle.state.wheels[index].angular_velocity_rad_s;
+                    tail_contact_square += contact_forward.powi(2);
+                    tail_wheel_square += wheel_omega.powi(2);
+                    tail_contact_peak = tail_contact_peak.max(contact_forward.abs());
+                    tail_wheel_peak = tail_wheel_peak.max(wheel_omega.abs());
+                    tail_samples += 1;
+                    let sign = if wheel_omega > 0.02 {
+                        1
+                    } else if wheel_omega < -0.02 {
+                        -1
+                    } else {
+                        0
+                    };
+                    if sign != 0 && wheel_signs[index] != 0 && sign != wheel_signs[index] {
+                        wheel_sign_flips += 1;
+                    }
+                    if sign != 0 {
+                        wheel_signs[index] = sign;
+                    }
+                }
+            }
+        }
+        let vehicle = &world.vehicles[0];
+        assert!(
+            vehicle.state.linear_velocity_mps.length() < 0.05,
+            "velocity={:?}, wheel={:?}, min_contact={minimum_contact_forward_speed}",
+            vehicle.state.linear_velocity_mps,
+            vehicle.state.wheels.map(|wheel| wheel.angular_velocity_rad_s)
+        );
+        assert!(minimum_contact_forward_speed > -0.05, "min_contact={minimum_contact_forward_speed}");
+        let contact_rms = (tail_contact_square / tail_samples as f64).sqrt();
+        let wheel_rms = (tail_wheel_square / tail_samples as f64).sqrt();
+        assert!(contact_rms < 0.01 && tail_contact_peak < 0.03, "contact rms={contact_rms}, peak={tail_contact_peak}");
+        assert!(wheel_rms < 0.02 && tail_wheel_peak < 0.1, "wheel rms={wheel_rms}, peak={tail_wheel_peak}");
+        assert!(wheel_sign_flips <= 2, "wheel sign flips={wheel_sign_flips}");
+        assert!(
+            vehicle.state.wheels.iter().all(|wheel| wheel.angular_velocity_rad_s.abs() < 0.2),
+            "wheel omega={:?}",
+            vehicle.state.wheels.map(|wheel| wheel.angular_velocity_rad_s)
+        );
+    }
+
+    fn body_acceleration_channels_for_test(world: &PhysicsWorld) -> [f64; 2] {
+        let vehicle = &world.vehicles[0];
+        let body = vehicle.state.orientation.conjugate().rotate(vehicle.telemetry.acceleration_mps2);
+        [-body.z, body.x]
+    }
 }
