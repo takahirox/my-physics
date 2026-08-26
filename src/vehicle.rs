@@ -691,6 +691,7 @@ impl Vehicle {
     pub fn sensors(&self) -> AidSensors {
         AidSensors {
             wheel_slip: self.state.wheels.map(|w| w.longitudinal_slip),
+            driven: self.definition.wheels.map(|wheel| wheel.driven),
             speed_mps: self.state.linear_velocity_mps.length(),
             yaw_rate_rad_s: self.state.angular_velocity_rad_s.y,
         }
@@ -770,9 +771,15 @@ impl Vehicle {
                 d.transmission.gear_ratios[(g as usize - 1).min(6)]
             }
         } * d.transmission.final_drive;
-        let driven_omega = (self.state.wheels[2].angular_velocity_rad_s + self.state.wheels[3].angular_velocity_rad_s)
-            * 0.5
-            * ratio.abs();
+        let (driven_omega_sum, driven_count) = self
+            .state
+            .wheels
+            .iter()
+            .zip(d.wheels)
+            .filter(|(_, definition)| definition.driven)
+            .fold((0.0, 0_u32), |(sum, count), (wheel, _)| (sum + wheel.angular_velocity_rad_s, count + 1));
+        let driven_omega =
+            if driven_count == 0 { 0.0 } else { driven_omega_sum / f64::from(driven_count) * ratio.abs() };
         let engine_omega = p.engine_rpm * core::f64::consts::TAU / 60.0;
         let slip = engine_omega - driven_omega;
         let clutch_health = if p.clutch_failed { 0.0 } else { 1.0 - p.clutch_wear * 0.8 };

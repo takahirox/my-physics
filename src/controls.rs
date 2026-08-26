@@ -122,6 +122,7 @@ impl Default for ControlOutput {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AidSensors {
     pub wheel_slip: [f64; 4],
+    pub driven: [bool; 4],
     pub speed_mps: f64,
     pub yaw_rate_rad_s: f64,
 }
@@ -206,7 +207,13 @@ impl DriverAids {
             self.abs_pressure = out.brake_per_wheel;
         }
         if self.traction_control_enabled {
-            let driven_slip = s.wheel_slip[2].max(s.wheel_slip[3]);
+            let driven_slip = s
+                .wheel_slip
+                .into_iter()
+                .zip(s.driven)
+                .filter_map(|(slip, driven)| driven.then_some(slip))
+                .reduce(f64::max)
+                .unwrap_or(0.0);
             let error = (driven_slip - 0.11).max(0.0);
             self.tc_integrator = (self.tc_integrator + error * dt).clamp(0.0, 0.5);
             if error > 0.0 {

@@ -7,6 +7,7 @@ mod archive;
 pub mod circuit;
 pub mod collision;
 pub mod controls;
+pub mod correlation;
 pub mod feedback;
 pub mod math;
 pub mod provenance;

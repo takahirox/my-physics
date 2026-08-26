@@ -540,6 +540,7 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
     let angular_momentum_before_powertrain =
         inertia_world(v.state.orientation, inertia_before_powertrain, v.state.angular_velocity_rad_s);
     let drive_torque = v.update_powertrain(dt);
+    let driven_wheel_count = v.definition.wheels.iter().filter(|wheel| wheel.driven).count();
     let inertia_after_powertrain = v.inertia_kg_m2();
     if inertia_after_powertrain != inertia_before_powertrain {
         // Fuel burn changes the inertia tensor before force integration. Carry
@@ -659,7 +660,8 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
                 + wheel_right * tire.lateral_force_n;
             force += wheel_force;
             torque += r.cross(wheel_force) + road_normal * tire.aligning_moment_nm;
-            let driven = if wdef.driven { drive_torque / 2.0 } else { 0.0 };
+            let driven =
+                if wdef.driven && driven_wheel_count != 0 { drive_torque / driven_wheel_count as f64 } else { 0.0 };
             let brake_effect =
                 (1.0 - 0.72 * ((ws.brake_temperature_k - 850.0) / 300.0).clamp(0.0, 1.0)) * (1.0 - 0.7 * ws.brake_wear);
             let brake_torque = v.control.brake_per_wheel[n] * wdef.brake_torque_nm * brake_effect;

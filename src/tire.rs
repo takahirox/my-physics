@@ -232,10 +232,10 @@ impl MagicFormulaTire {
         s.wear = (s.wear + slip_power * 2.0e-9 * i.dt * (1.0 + ((s.tread_temperature_k - 390.0) / 30.0).max(0.0)))
             .clamp(0.0, 1.0);
         if s.puncture_area_m2 > 0.0 {
+            if s.failure == TireFailure::Healthy {
+                s.failure = TireFailure::Punctured;
+            }
             s.pressure_pa = (s.pressure_pa - s.puncture_area_m2 * 2.8e8 * i.dt).max(0.0);
-        }
-        if s.failure == TireFailure::Healthy && s.pressure_pa < 120_000.0 {
-            s.failure = TireFailure::Punctured;
         }
         if matches!(s.failure, TireFailure::Punctured) && (s.pressure_pa < 35_000.0 || s.carcass_damage > 0.82) {
             s.failure = TireFailure::Blowout;

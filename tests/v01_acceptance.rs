@@ -2,7 +2,7 @@ use my_physics::collision::{CollisionShape, StaticCollider};
 use my_physics::feedback::FeedbackEventKind;
 use my_physics::math::semi_implicit_linear_step;
 use my_physics::road::{DynamicRoad, RoadCell};
-use my_physics::tire::TireState;
+use my_physics::tire::{TireFailure, TireState};
 use my_physics::{DriverInput, Fidelity, MagicFormulaTire, PhysicsWorld, Quat, TireInput, TireModel, Vec3};
 
 fn collision_world(shape: CollisionShape, position: Vec3, orientation: Quat) -> PhysicsWorld {
@@ -79,6 +79,7 @@ fn pressure_changes_contact_patch_and_rolling_resistance() {
     let normal_output = model.evaluate(&mut normal, input);
     let mut low = TireState { pressure_pa: 80_000.0, ..TireState::default() };
     let low_output = model.evaluate(&mut low, input);
+    assert_eq!(low.failure, TireFailure::Healthy, "intact underinflation is not puncture evidence");
     assert!(low.contact_patch_m2 > normal.contact_patch_m2);
     assert!(low_output.rolling_resistance_n > normal_output.rolling_resistance_n);
 }

@@ -97,7 +97,12 @@ fn yaw_radians(q: Quat) -> f64 {
 
 #[test]
 fn esc_uses_corrective_wheels_instead_of_suppressing_the_requested_turn() {
-    let sensors = |yaw_rate_rad_s| AidSensors { wheel_slip: [0.0; 4], speed_mps: 40.0, yaw_rate_rad_s };
+    let sensors = |yaw_rate_rad_s| AidSensors {
+        wheel_slip: [0.0; 4],
+        driven: [false, false, true, true],
+        speed_mps: 40.0,
+        yaw_rate_rad_s,
+    };
     let right = DriverInput { steering: 1.0, ..DriverInput::default() };
     let left = DriverInput { steering: -1.0, ..DriverInput::default() };
 
@@ -115,6 +120,33 @@ fn esc_uses_corrective_wheels_instead_of_suppressing_the_requested_turn() {
     let right_opposite_yaw = DriverAids::default().update(right, sensors(0.3), 0.001);
     assert!(right_opposite_yaw.esc_active);
     assert!(right_opposite_yaw.brake_per_wheel[3] > 0.0);
+}
+
+#[test]
+fn traction_control_and_driveline_follow_the_authored_driven_wheel_mask() {
+    let mut aids = DriverAids::default();
+    let full_throttle = DriverInput { throttle: 1.0, ..DriverInput::default() };
+    let front_slip = AidSensors {
+        wheel_slip: [0.35, 0.32, 0.0, 0.0],
+        driven: [true, true, false, false],
+        speed_mps: 15.0,
+        yaw_rate_rad_s: 0.0,
+    };
+    assert!(aids.update(full_throttle, front_slip, 0.001).tc_active);
+    let rear_slip_is_ignored = AidSensors { wheel_slip: [0.0, 0.0, 0.8, 0.8], ..front_slip };
+    assert!(!DriverAids::default().update(full_throttle, rear_slip_is_ignored, 0.001).tc_active);
+
+    let mut definition = VehicleDefinition::engineering_reference();
+    definition.wheels[0].driven = true;
+    definition.wheels[1].driven = true;
+    definition.wheels[2].driven = false;
+    definition.wheels[3].driven = false;
+    let mut world = PhysicsWorld::new(SimulationConfig::default());
+    world.add_vehicle(definition);
+    world.set_input(0, full_throttle).unwrap();
+    world.step_fixed(5_000).unwrap();
+    assert!(world.vehicles[0].telemetry.speed_mps > 12.0);
+    assert!(world.vehicles[0].state.wheels[0].angular_velocity_rad_s.abs() > 1.0);
 }
 
 #[test]

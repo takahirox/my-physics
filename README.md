@@ -48,11 +48,16 @@ cargo run --release --example steering_validation
 ./scripts/run-maneuver-validation.sh target/maneuver-validation
 ```
 
+Licensed external telemetry can be compared through the dataset-independent
+[real-world correlation framework](docs/real-world-correlation.md). Its strict
+manifest, split, alignment and provenance rules do not alter the physical
+plant, and no third-party raw dataset is included in this repository.
+
 ## Architecture
 
 The physical plant is reusable and has no renderer, DOM, browser or game-engine dependency. `PhysicsWorld` owns deterministic timing, road state, collisions, LOD, snapshots and vehicles. Each `Vehicle` composes chassis, wheels, tires, suspension, powertrain, damage and telemetry. Driver aids consume sensor values and return control commands through a separate module.
 
-All internal quantities use SI units and radians. Coordinates are right-handed and Three.js-compatible: +X right, +Y up and -Z vehicle-forward. See the [v0.1 acceptance matrix](docs/v0.1-acceptance.md), [Architecture](docs/architecture.md), [Vehicle data and provenance](docs/vehicle-data.md), [Validation](docs/validation.md), [Simulation Lab](docs/simulation-lab.md), [Performance](docs/performance.md), and the [Roadmap](docs/roadmap.md).
+All internal quantities use SI units and radians. Coordinates are right-handed and Three.js-compatible: +X right, +Y up and -Z vehicle-forward. See the [v0.1 acceptance matrix](docs/v0.1-acceptance.md), [Architecture](docs/architecture.md), [Vehicle data and provenance](docs/vehicle-data.md), [Validation](docs/validation.md), [Simulation Lab](docs/simulation-lab.md), [Real-world correlation](docs/real-world-correlation.md), [Performance](docs/performance.md), and the [Roadmap](docs/roadmap.md).
 
 ## Fidelity and honest limitations
 

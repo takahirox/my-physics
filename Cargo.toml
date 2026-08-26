@@ -17,6 +17,10 @@ path = "src/bin/headless.rs"
 name = "maneuver-validation"
 path = "src/bin/maneuver-validation.rs"
 
+[[bin]]
+name = "correlate-telemetry"
+path = "src/bin/correlate-telemetry.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1
