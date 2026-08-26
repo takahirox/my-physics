@@ -1,12 +1,14 @@
-use my_physics::circuit::{ai_driver_input_with_yaw, minimum_radius_m, nearest_segment, segments, total_length_m};
+use my_physics::circuit::{
+    ai_driver_input_with_yaw, minimum_radius_m, nearest_segment, sample_surface, segments, total_length_m,
+};
 use my_physics::controls::AidSensors;
 use my_physics::road::RoadCell;
 use my_physics::tire::{TireFailure, TireState};
 use my_physics::vehicle::Vehicle;
 use my_physics::{
-    ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverAids, DriverInput, KeyboardSteeringAssist, MagicFormulaTire,
-    PhysicsWorld, Quat, SimulationConfig, Snapshot, StepError, TireInput, TireModel, VehicleDefinition,
-    decode_input_history, encode_input_history,
+    ArchiveError, DEMO_TRACK_HALF_WIDTH_M, DriverAids, DriverInput, GroundSurface, KeyboardSteeringAssist,
+    MagicFormulaTire, PhysicsWorld, Quat, SimulationConfig, Snapshot, StepError, TireInput, TireModel,
+    VehicleDefinition, decode_input_history, encode_input_history,
 };
 
 #[test]
@@ -61,6 +63,10 @@ fn throttle_accelerates_reference_vehicle_forward() {
 fn automatic_full_throttle_accelerates_without_chain_shift_failure() {
     let mut world = PhysicsWorld::demo(1);
     world.static_colliders.clear();
+    // This is a straight-line plant test, independent of the demo circuit.
+    world.config.ground_surface = GroundSurface::Flat;
+    world.vehicles[0].state.position_m = my_physics::Vec3::new(0.0, 0.55, 0.0);
+    world.vehicles[0].state.orientation = Quat::IDENTITY;
     world.set_input(0, DriverInput { throttle: 1.0, gear_request: 0, ..DriverInput::default() }).unwrap();
 
     world.step_fixed(5_000).unwrap();
@@ -89,6 +95,56 @@ fn demo_circuit_barrier_follows_a_remote_curve() {
 
     let lateral = (world.vehicles[0].state.position_m - segment.center_m).dot(segment.right);
     assert!(lateral <= DEMO_TRACK_HALF_WIDTH_M - 0.9, "lateral={lateral}");
+}
+
+#[test]
+fn demo_spawn_and_contact_use_the_same_elevated_banked_surface() {
+    let world = PhysicsWorld::demo(1);
+    assert_eq!(world.config.ground_surface, GroundSurface::DemoCircuit);
+    let vehicle = &world.vehicles[0];
+    let surface = sample_surface(vehicle.state.position_m);
+    let clearance = (vehicle.state.position_m - surface.point_m).dot(surface.normal);
+    assert!((clearance - 0.55).abs() < 1.0e-8, "clearance={clearance}");
+    assert!(vehicle.state.orientation.rotate(my_physics::Vec3::Y).dot(surface.normal) > 0.999);
+    assert!(vehicle.state.orientation.rotate(my_physics::Vec3::FORWARD).dot(surface.forward) > 0.999);
+    assert_eq!(PhysicsWorld::new(SimulationConfig::default()).config.ground_surface, GroundSurface::Flat);
+}
+
+#[test]
+fn gravity_response_has_opposite_sign_uphill_and_downhill() {
+    fn response(index: usize) -> f64 {
+        let segment = segments()[index];
+        let surface = sample_surface(segment.center_m);
+        let mut world = PhysicsWorld::demo(1);
+        world.static_colliders.clear();
+        let vehicle = &mut world.vehicles[0];
+        vehicle.definition.transmission.automatic = false;
+        vehicle.state.powertrain.gear = 0;
+        vehicle.state.position_m = surface.point_m + surface.normal * 0.55;
+        vehicle.state.orientation = segment.orientation();
+        vehicle.previous_position_m = vehicle.state.position_m;
+        vehicle.previous_orientation = vehicle.state.orientation;
+        world.set_input_unrecorded(0, DriverInput::default()).unwrap();
+        world.step_fixed(500).unwrap();
+        world.vehicles[0].state.linear_velocity_mps.dot(segment.forward)
+    }
+
+    let uphill = segments()
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.forward.y.total_cmp(&b.forward.y))
+        .map(|(index, _)| index)
+        .unwrap();
+    let downhill = segments()
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.forward.y.total_cmp(&b.forward.y))
+        .map(|(index, _)| index)
+        .unwrap();
+    let uphill_response = response(uphill);
+    let downhill_response = response(downhill);
+    assert!(uphill_response < -0.05, "uphill response={uphill_response}");
+    assert!(downhill_response > 0.05, "downhill response={downhill_response}");
 }
 
 fn yaw_radians(q: Quat) -> f64 {
@@ -545,9 +601,12 @@ fn engine_damage_accumulates_with_exposure_duration() {
 fn vehicle_collision_applies_impulse_and_physical_damage() {
     let mut w = PhysicsWorld::demo(2);
     w.static_colliders.clear();
+    w.config.ground_surface = GroundSurface::Flat;
     w.vehicles[0].state.position_m.x = 0.0;
+    w.vehicles[0].state.position_m.y = 0.55;
     w.vehicles[0].state.position_m.z = 0.0;
     w.vehicles[1].state.position_m.x = 0.0;
+    w.vehicles[1].state.position_m.y = 0.55;
     w.vehicles[1].state.position_m.z = -3.5;
     w.vehicles[0].state.orientation = Quat::IDENTITY;
     w.vehicles[1].state.orientation = Quat::IDENTITY;

@@ -21,11 +21,13 @@ pub mod world;
 mod wasm;
 
 pub use archive::{ArchiveError, decode_input_history, encode_input_history};
-pub use circuit::{CIRCUIT_HALF_WIDTH_M, CircuitSegment};
+pub use circuit::{CIRCUIT_HALF_WIDTH_M, CircuitSegment, CircuitSurfaceSample};
 pub use controls::{ControlOutput, DriverAids, DriverInput, KeyboardSteeringAssist, speed_sensitive_steering_limit};
 pub use feedback::{AudioFrame, FeedbackEvent, FeedbackEventKind, ForceFeedbackFrame};
 pub use math::{Quat, Vec3};
 pub use provenance::{ParameterOrigin, ParameterProvenance, ParameterValidity, VehicleParameterProvenance};
 pub use tire::{MagicFormulaTire, TireInput, TireModel, TireOutput};
 pub use vehicle::{InterpolatedState, Telemetry, VehicleDefinition, VehiclePreset, VehicleState};
-pub use world::{DEMO_TRACK_HALF_WIDTH_M, Fidelity, PhysicsWorld, SimulationConfig, Snapshot, StepError};
+pub use world::{
+    DEMO_TRACK_HALF_WIDTH_M, Fidelity, GroundSurface, PhysicsWorld, SimulationConfig, Snapshot, StepError,
+};

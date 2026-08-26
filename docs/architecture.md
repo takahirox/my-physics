@@ -44,6 +44,8 @@ The compact WASM diagnostic getters identify stages as `0=raw`, `1=normalized`, 
 
 The native and WASM paths call this same flow. Non-player LOD caches expensive force evaluation for 4 or 10 base ticks while continuing rigid-body integration every 1 ms. A first-order fidelity transition plus 50 ms cached-force blending avoids abrupt LOD changes. Device benchmarks set an automatic fidelity ceiling and applications can override it.
 
+The demo circuit is a physical three-dimensional road, not a rendering offset. Its cyclic centerline authors elevation, derives bounded banking from signed curvature, and exposes a deterministic local point/normal/forward/right frame. Suspension travel, tire forces, chassis-floor fallback, detached-body contact and barrier OBBs all use that frame. `SimulationConfig::ground_surface` selects it explicitly for circuit worlds; flat proving grounds and correlation runs retain `Flat`. WASM exports segment XYZ and the complete orthonormal frame, plus interpolated vehicle quaternions, so browser geometry can consume the authoritative definition without recreating elevation or banking in JavaScript.
+
 ## Determinism policy (v0.1)
 
 - Fixed `f64` operations, fixed iteration order and fixed timestep for authoritative runs
@@ -64,4 +66,4 @@ Vehicle definitions separate constants from runtime state. Built-in engineering-
 
 ## Snapshot compatibility
 
-`Snapshot::to_bytes` produces the canonical v0.1 wire format and `Snapshot::from_bytes` validates its magic, version, lengths, finite floating-point values, quaternion norms and checksum. Timed input history uses a separately typed archive. Format changes require a new version and migration policy; silent reinterpretation is forbidden.
+`Snapshot::to_bytes` produces the canonical v0.1 wire format and `Snapshot::from_bytes` validates its magic, version, lengths, finite floating-point values, quaternion norms and checksum. Timed input history uses a separately typed archive. Format changes require a new version and migration policy; silent reinterpretation is forbidden. Snapshot v5 records the selected physical ground surface; v1-v4 migrate explicitly to `Flat`, matching the only ground geometry those archives supported.

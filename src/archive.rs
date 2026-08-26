@@ -15,11 +15,11 @@ use crate::vehicle::{
     ChassisDefinition, DamageState, EngineDefinition, PowertrainState, Telemetry, TransmissionDefinition, Vehicle,
     VehicleDefinition, VehicleState, WheelDefinition, WheelState,
 };
-use crate::world::{Fidelity, InputFrame, SimulationConfig, Snapshot};
+use crate::world::{Fidelity, GroundSurface, InputFrame, SimulationConfig, Snapshot};
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"MYPHY001";
 const INPUT_MAGIC: &[u8; 8] = b"MYINP001";
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 const INPUT_VERSION: u32 = 2;
 const MAX_ITEMS: usize = 1_000_000;
 
@@ -276,17 +276,40 @@ fn write_config(w: &mut Writer, value: SimulationConfig) {
     w.usize(value.player_vehicle);
     w.bool(value.automatic_lod);
     write_fidelity(w, value.fidelity_ceiling);
+    if w.version >= 5 {
+        w.u8(match value.ground_surface {
+            GroundSurface::Flat => 0,
+            GroundSurface::DemoCircuit => 1,
+        });
+    }
 }
 
 fn read_config(r: &mut Reader<'_>) -> Result<SimulationConfig, ArchiveError> {
+    let fixed_dt_s = r.f64()?;
+    let gravity_mps2 = r.f64()?;
+    let max_variable_dt_s = r.f64()?;
+    let lod_transition_s = r.f64()?;
+    let player_vehicle = r.usize()?;
+    let automatic_lod = r.bool()?;
+    let fidelity_ceiling = read_fidelity(r)?;
+    let ground_surface = if r.version >= 5 {
+        match r.u8()? {
+            0 => GroundSurface::Flat,
+            1 => GroundSurface::DemoCircuit,
+            _ => return Err(ArchiveError::InvalidData),
+        }
+    } else {
+        GroundSurface::Flat
+    };
     Ok(SimulationConfig {
-        fixed_dt_s: r.f64()?,
-        gravity_mps2: r.f64()?,
-        max_variable_dt_s: r.f64()?,
-        lod_transition_s: r.f64()?,
-        player_vehicle: r.usize()?,
-        automatic_lod: r.bool()?,
-        fidelity_ceiling: read_fidelity(r)?,
+        fixed_dt_s,
+        gravity_mps2,
+        max_variable_dt_s,
+        lod_transition_s,
+        player_vehicle,
+        automatic_lod,
+        fidelity_ceiling,
+        ground_surface,
     })
 }
 
@@ -1334,7 +1357,7 @@ fn read_bool_array<const N: usize>(r: &mut Reader<'_>) -> Result<[bool; N], Arch
 mod tests {
     use super::{decode_snapshot, encode_snapshot_version};
     use crate::provenance::ParameterOrigin;
-    use crate::world::PhysicsWorld;
+    use crate::world::{GroundSurface, PhysicsWorld};
 
     #[test]
     fn version_one_snapshot_defaults_new_abs_and_cornering_state() {
@@ -1381,5 +1404,16 @@ mod tests {
         assert_eq!(wheel.relaxation_length_m, crate::tire::MagicFormulaTire::default().relaxation_length_m);
         assert_eq!(decoded.tire_model, crate::tire::MagicFormulaTire::default());
         assert_eq!(decoded.vehicles[0].definition.provenance, snapshot.vehicles[0].definition.provenance);
+    }
+
+    #[test]
+    fn legacy_snapshot_defaults_to_flat_ground_and_version_five_preserves_circuit_ground() {
+        let snapshot = PhysicsWorld::demo(1).snapshot();
+        assert_eq!(snapshot.config.ground_surface, GroundSurface::DemoCircuit);
+
+        let legacy = decode_snapshot(&encode_snapshot_version(&snapshot, 4)).unwrap();
+        assert_eq!(legacy.config.ground_surface, GroundSurface::Flat);
+        let current = decode_snapshot(&encode_snapshot_version(&snapshot, 5)).unwrap();
+        assert_eq!(current.config.ground_surface, GroundSurface::DemoCircuit);
     }
 }

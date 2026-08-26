@@ -3,10 +3,13 @@ use my_physics::feedback::FeedbackEventKind;
 use my_physics::math::semi_implicit_linear_step;
 use my_physics::road::{DynamicRoad, RoadCell};
 use my_physics::tire::{TireFailure, TireState};
-use my_physics::{DriverInput, Fidelity, MagicFormulaTire, PhysicsWorld, Quat, TireInput, TireModel, Vec3};
+use my_physics::{
+    DriverInput, Fidelity, GroundSurface, MagicFormulaTire, PhysicsWorld, Quat, TireInput, TireModel, Vec3,
+};
 
 fn collision_world(shape: CollisionShape, position: Vec3, orientation: Quat) -> PhysicsWorld {
     let mut world = PhysicsWorld::demo(1);
+    world.config.ground_surface = GroundSurface::Flat;
     world.static_colliders.clear();
     world.static_colliders.push(StaticCollider {
         position_m: position,

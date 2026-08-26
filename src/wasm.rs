@@ -306,8 +306,52 @@ pub extern "C" fn physics_track_segment_x(index: u32) -> f64 {
     crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.center_m.x)
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_y(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.center_m.y)
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn physics_track_segment_z(index: u32) -> f64 {
     crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.center_m.z)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_forward_x(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.forward.x)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_forward_y(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.forward.y)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_forward_z(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.forward.z)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_right_x(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.right.x)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_right_y(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.right.y)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_right_z(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.right.z)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_up_x(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.up.x)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_up_y(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.up.y)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_up_z(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.up.z)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_track_segment_bank(index: u32) -> f64 {
+    crate::circuit::segments().get(index as usize).map_or(f64::NAN, |segment| segment.bank_rad)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_track_segment_yaw(index: u32) -> f64 {
@@ -533,6 +577,22 @@ pub extern "C" fn physics_render_z(i: u32, alpha: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_render_yaw(i: u32, alpha: f64) -> f64 {
     read_vehicle(i, |v| yaw(v.interpolated_state(alpha).orientation))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_render_orientation_w(i: u32, alpha: f64) -> f64 {
+    read_vehicle(i, |v| v.interpolated_state(alpha).orientation.w)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_render_orientation_x(i: u32, alpha: f64) -> f64 {
+    read_vehicle(i, |v| v.interpolated_state(alpha).orientation.x)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_render_orientation_y(i: u32, alpha: f64) -> f64 {
+    read_vehicle(i, |v| v.interpolated_state(alpha).orientation.y)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_render_orientation_z(i: u32, alpha: f64) -> f64 {
+    read_vehicle(i, |v| v.interpolated_state(alpha).orientation.z)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_speed(i: u32) -> f64 {

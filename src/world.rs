@@ -15,6 +15,15 @@ pub enum Fidelity {
     Medium,
     High,
 }
+
+/// Geometry used for wheel/road contact. Keeping this explicit prevents the
+/// circuit elevation profile from leaking into headless proving grounds or
+/// real-world correlation runs that intentionally use a flat surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroundSurface {
+    Flat,
+    DemoCircuit,
+}
 impl Fidelity {
     pub fn scalar(self) -> f64 {
         match self {
@@ -34,6 +43,7 @@ pub struct SimulationConfig {
     pub player_vehicle: usize,
     pub automatic_lod: bool,
     pub fidelity_ceiling: Fidelity,
+    pub ground_surface: GroundSurface,
 }
 impl Default for SimulationConfig {
     fn default() -> Self {
@@ -45,6 +55,7 @@ impl Default for SimulationConfig {
             player_vehicle: 0,
             automatic_lod: true,
             fidelity_ceiling: Fidelity::High,
+            ground_surface: GroundSurface::Flat,
         }
     }
 }
@@ -142,7 +153,8 @@ impl PhysicsWorld {
         world
     }
     pub fn demo_with_preset(vehicle_count: usize, preset: VehiclePreset) -> Self {
-        let mut w = Self::new(SimulationConfig::default());
+        let mut w =
+            Self::new(SimulationConfig { ground_surface: GroundSurface::DemoCircuit, ..SimulationConfig::default() });
         // Bound the dynamic-road cell count while covering the full-size
         // circuit and its barriers (720 m square at 4.5 m resolution).
         w.road = DynamicRoad::new(160, 160, 4.5);
@@ -156,21 +168,22 @@ impl PhysicsWorld {
             let row = n / 2;
             let segment = circuit[(circuit.len() + circuit.len() - row * 2) % circuit.len()];
             let lateral = if n % 2 == 0 { -1.55 } else { 1.55 };
-            v.state.position_m = segment.center_m + segment.right * lateral + Vec3::new(0.0, 0.55, 0.0);
-            v.state.orientation = Quat::from_axis_angle(Vec3::Y, segment.yaw_rad);
+            let surface = circuit::sample_surface(segment.center_m + segment.right * lateral);
+            v.state.position_m = surface.point_m + surface.normal * 0.55;
+            v.state.orientation = segment.orientation();
             v.previous_position_m = v.state.position_m;
             v.previous_orientation = v.state.orientation;
             v.target_fidelity = if n == 0 { 1.0 } else { 0.6 };
             w.vehicles.push(v);
         }
         for segment in circuit {
-            let orientation = Quat::from_axis_angle(Vec3::Y, segment.yaw_rad);
+            let orientation = segment.orientation();
             for side in [-1.0, 1.0] {
+                let midpoint = segment.center_m + segment.forward * (segment.length_m * 0.5);
+                let surface =
+                    circuit::sample_surface(midpoint + segment.right * side * (DEMO_TRACK_HALF_WIDTH_M + 0.3));
                 w.static_colliders.push(StaticCollider {
-                    position_m: segment.center_m
-                        + segment.forward * (segment.length_m * 0.5)
-                        + segment.right * side * (DEMO_TRACK_HALF_WIDTH_M + 0.3)
-                        + Vec3::new(0.0, 1.0, 0.0),
+                    position_m: surface.point_m + surface.normal,
                     orientation,
                     shape: CollisionShape::Box { half_extents_m: Vec3::new(0.3, 1.0, segment.length_m * 0.5 + 0.12) },
                     restitution: 0.15,
@@ -319,6 +332,7 @@ impl PhysicsWorld {
                     dt,
                     recompute,
                     lod_stride: stride as f64,
+                    ground_surface: self.config.ground_surface,
                 },
             );
         }
@@ -493,10 +507,13 @@ impl PhysicsWorld {
             b.linear_velocity_mps.y -= self.config.gravity_mps2 * dt;
             b.position_m += b.linear_velocity_mps * dt;
             b.orientation = b.orientation.integrate_world_angular_velocity(b.angular_velocity_rad_s, dt);
-            if b.position_m.y < 0.1 {
-                b.position_m.y = 0.1;
-                if b.linear_velocity_mps.y < 0.0 {
-                    b.linear_velocity_mps.y *= -0.25;
+            let ground = ground_contact(self.config.ground_surface, b.position_m);
+            let clearance = (b.position_m - ground.point_m).dot(ground.normal);
+            if clearance < 0.1 {
+                b.position_m += ground.normal * (0.1 - clearance);
+                let normal_speed = b.linear_velocity_mps.dot(ground.normal);
+                if normal_speed < 0.0 {
+                    b.linear_velocity_mps -= ground.normal * (1.25 * normal_speed);
                 }
                 b.linear_velocity_mps *= 0.995;
             }
@@ -531,10 +548,27 @@ struct IntegrationContext {
     dt: f64,
     recompute: bool,
     lod_stride: f64,
+    ground_surface: GroundSurface,
+}
+
+#[derive(Clone, Copy)]
+struct GroundContact {
+    point_m: Vec3,
+    normal: Vec3,
+}
+
+fn ground_contact(surface: GroundSurface, position_m: Vec3) -> GroundContact {
+    match surface {
+        GroundSurface::Flat => GroundContact { point_m: Vec3::new(position_m.x, 0.0, position_m.z), normal: Vec3::Y },
+        GroundSurface::DemoCircuit => {
+            let sample = circuit::sample_surface(position_m);
+            GroundContact { point_m: sample.point_m, normal: sample.normal }
+        }
+    }
 }
 
 fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: IntegrationContext) {
-    let IntegrationContext { tire_model, wind, gravity, dt, recompute, lod_stride } = context;
+    let IntegrationContext { tire_model, wind, gravity, dt, recompute, lod_stride, ground_surface } = context;
     v.update_controls(dt);
     let inertia_before_powertrain = v.inertia_kg_m2();
     let angular_momentum_before_powertrain =
@@ -555,10 +589,6 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
     if recompute {
         let orientation = v.state.orientation;
         let body_up = orientation.rotate(Vec3::Y);
-        // The v0.1 road is a flat height field. Suspension reactions and tire
-        // forces therefore act in its world-up tangent frame; using body-up
-        // fed chassis roll back into lateral/vertical tire force components.
-        let road_normal = Vec3::Y;
         let cg_local = v.cg_local_m();
         let relative_air = v.state.linear_velocity_mps - wind;
         let air_speed = relative_air.length();
@@ -579,7 +609,8 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
         let mut compressions = [0.0; 4];
         for (n, wdef) in v.definition.wheels.iter().enumerate() {
             let mount = v.state.position_m + orientation.rotate(wdef.mount_local_m - cg_local);
-            let length = mount.y - wdef.radius_m;
+            let surface = ground_contact(ground_surface, mount);
+            let length = (mount - surface.point_m).dot(surface.normal) - wdef.radius_m;
             compressions[n] = (wdef.rest_length_m - length).clamp(0.0, wdef.max_travel_m * 1.35);
         }
         for n in 0..4 {
@@ -587,8 +618,10 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             let wheel_damage = v.state.wheels[n].wheel_damage;
             let effective_radius = wdef.radius_m * (1.0 - 0.08 * wheel_damage);
             let mount = v.state.position_m + orientation.rotate(wdef.mount_local_m - cg_local);
+            let surface = ground_contact(ground_surface, mount);
+            let road_normal = surface.normal;
             let ws = &mut v.state.wheels[n];
-            let contact = Vec3::new(mount.x, 0.0, mount.z);
+            let contact = surface.point_m;
             let r = contact - v.state.position_m;
             let compression = compressions[n];
             let previous_compression = ws.suspension_compression_m;
@@ -609,7 +642,7 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
             ws.camber_rad = wheel_damage * 0.12 * (if n % 2 == 0 { -1.0 } else { 1.0 });
             let steer_q = Quat::from_axis_angle(Vec3::Y, -ws.steer_angle_rad);
             let wheel_heading = orientation.rotate(steer_q.rotate(Vec3::FORWARD));
-            let wheel_forward = Vec3::new(wheel_heading.x, 0.0, wheel_heading.z).normalized();
+            let wheel_forward = (wheel_heading - road_normal * wheel_heading.dot(road_normal)).normalized();
             let wheel_right = wheel_forward.cross(road_normal).normalized();
             let contact_velocity = v.state.linear_velocity_mps + v.state.angular_velocity_rad_s.cross(r);
             let longitudinal = contact_velocity.dot(wheel_forward);
@@ -738,12 +771,20 @@ fn integrate_vehicle(v: &mut Vehicle, road: &mut DynamicRoad, context: Integrati
     );
     v.state.orientation = orientation;
     v.state.angular_velocity_rad_s = angular_velocity;
-    if v.state.position_m.y < 0.18 {
-        let impact = (-v.state.linear_velocity_mps.y).max(0.0);
-        v.state.position_m.y = 0.18;
-        v.state.linear_velocity_mps.y = v.state.linear_velocity_mps.y.max(0.0);
+    // Chassis-floor fallback for severe suspension compression or an inverted
+    // vehicle. It follows the selected physical road instead of the legacy
+    // y=0 plane, so a downhill section cannot silently become a flat floor.
+    let ground = ground_contact(ground_surface, v.state.position_m);
+    let clearance = (v.state.position_m - ground.point_m).dot(ground.normal);
+    if clearance < 0.18 {
+        let normal_speed = v.state.linear_velocity_mps.dot(ground.normal);
+        let impact = (-normal_speed).max(0.0);
+        v.state.position_m += ground.normal * (0.18 - clearance);
+        if normal_speed < 0.0 {
+            v.state.linear_velocity_mps -= ground.normal * normal_speed;
+        }
         if impact > 2.0 {
-            apply_impact_damage(v, 0.5 * mass * impact * impact, Vec3::Y);
+            apply_impact_damage(v, 0.5 * mass * impact * impact, ground.normal);
         }
     }
     v.state.simulation_time_s += dt;
