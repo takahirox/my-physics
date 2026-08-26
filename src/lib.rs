@@ -22,7 +22,10 @@ mod wasm;
 
 pub use archive::{ArchiveError, decode_input_history, encode_input_history};
 pub use circuit::{CIRCUIT_HALF_WIDTH_M, CircuitSegment, CircuitSurfaceSample};
-pub use controls::{ControlOutput, DriverAids, DriverInput, KeyboardSteeringAssist, speed_sensitive_steering_limit};
+pub use controls::{
+    ArcadeDriftPhase, ArcadeDriftSensors, ArcadeKeyboardDriftAssist, ControlOutput, DriverAids, DriverInput,
+    KeyboardSteeringAssist, speed_sensitive_steering_limit,
+};
 pub use feedback::{AudioFrame, FeedbackEvent, FeedbackEventKind, ForceFeedbackFrame};
 pub use math::{Quat, Vec3};
 pub use provenance::{ParameterOrigin, ParameterProvenance, ParameterValidity, VehicleParameterProvenance};

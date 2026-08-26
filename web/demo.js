@@ -21,13 +21,14 @@ import {
 } from './input-config.mjs';
 import { RaceDirector, RACE_PHASE, formatRaceTime } from './race-state.mjs';
 import { TelemetryAudioEngine } from './audio-engine.mjs';
-import { EFFECT_LIMITS, effectEmissionRates } from './presentation-config.mjs';
+import { EFFECT_LIMITS, classifyDriftOutcome, effectEmissionRates } from './presentation-config.mjs';
 
 const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
 const inputParameters = new URLSearchParams(location.search);
 const ARCADE_DEMO = inputParameters.get('demo') === 'arcade';
 const SIMULATION_LAB = inputParameters.get('demo') === 'simulation-lab';
+const DRIFT_PLAYGROUND = ARCADE_DEMO && inputParameters.get('playground') === 'drift';
 const DRIVE_PROFILES = ['accessible', 'sport', 'simulation', 'arcade'];
 const PROFILE_INDEX = Object.freeze({ accessible: 0, sport: 1, simulation: 2, arcade: 3 });
 if (ARCADE_DEMO) {
@@ -35,6 +36,16 @@ if (ARCADE_DEMO) {
   document.querySelector('h1').textContent = 'Arcade Fun Circuit';
   document.querySelector('.eyebrow').textContent = 'SAME RUST PLANT · AUTHORED ARCADE-FUN-V1 · 1000 HZ';
   document.querySelector('.legend').textContent = 'ARCADE · WASD / arrows · Space: handbrake drift · C: camera · I: Arcade / Simulation raw · R: reset · P: AI';
+}
+if (DRIFT_PLAYGROUND) {
+  document.body.classList.add('drift-playground');
+  document.querySelector('h1').textContent = 'Keyboard Drift Playground';
+  document.querySelector('.eyebrow').textContent = 'ARCADE INPUT ASSIST · SAME PHYSICAL PLANT · REPEATABLE SHORT COURSE';
+  document.querySelector('.legend').textContent = 'DRIFT TEST · A/D: turn intent · Space: physical handbrake · W: throttle · R/Enter: restart entry';
+  document.querySelector('#driftHud').hidden = false;
+  const driftPanel = document.querySelector('#driftPanel');
+  driftPanel.hidden = false;
+  document.querySelector('aside').prepend(driftPanel);
 }
 if (SIMULATION_LAB) {
   document.body.classList.add('simulation-lab');
@@ -59,7 +70,7 @@ let previous = performance.now();
 let accumulator = 0;
 let gear = 0;
 let cameraPreset = 'chase';
-const raceDirector = SIMULATION_LAB ? null : new RaceDirector({ totalLaps: 3 });
+const raceDirector = SIMULATION_LAB || DRIFT_PLAYGROUND ? null : new RaceDirector({ totalLaps: 3 });
 let raceView = null;
 let savedRaceState = null;
 const audioEngine = new TelemetryAudioEngine();
@@ -78,7 +89,8 @@ function vehicleProgresses() {
 }
 
 function resetRace() {
-  api.physics_reset();
+  if (DRIFT_PLAYGROUND) api.physics_arcade_drift_playground_reset();
+  else api.physics_reset();
   api.physics_set_experience_profile(PROFILE_INDEX[inputConfig.driveProfile] ?? 1);
   gear = 0;
   accumulator = 0;
@@ -892,6 +904,27 @@ class Renderer3D {
     }
   }
 
+  driftPlaygroundGround(playerPosition) {
+    this.box([playerPosition[0], -0.24, playerPosition[2]], [520, 0.32, 520], rgb('#24452b'));
+    this.box([0, -0.08, -90], [34, 0.12, 300], rgb('#202522'));
+    for (const side of [-1, 1]) {
+      this.box([side * 16.2, 0.018, -90], [0.22, 0.025, 300], rgb('#f1efe7'));
+      for (let marker = -230; marker <= 50; marker += 10) {
+        const color = Math.abs(marker / 10) % 2 ? '#d9342b' : '#f4f2e9';
+        this.box([side * 15.7, 0.035, marker], [0.75, 0.05, 4.8], rgb(color));
+      }
+    }
+    for (let marker = -230; marker <= 50; marker += 12) {
+      this.box([0, 0.025, marker], [0.14, 0.025, 5.5], rgb('#d9ddd7', 0.55));
+    }
+    for (const gate of [-45, -90, -135, -180]) {
+      for (const side of [-1, 1]) {
+        this.box([side * 12.5, 0.42, gate], [0.42, 0.84, 0.42], rgb('#ffb72d'));
+        this.box([side * 12.5, 1.05, gate], [0.25, 0.4, 0.25], rgb('#f4f2e9'));
+      }
+    }
+  }
+
   scene(physics, elapsed, alpha) {
     const gl = this.gl;
     const aspect = this.resize();
@@ -962,7 +995,8 @@ class Renderer3D {
     this.drawCalls = 0;
     this.beginBatch();
 
-    if (SIMULATION_LAB) this.laboratoryGround([x, y, z]);
+    if (DRIFT_PLAYGROUND) this.driftPlaygroundGround([x, y, z]);
+    else if (SIMULATION_LAB) this.laboratoryGround([x, y, z]);
     else this.raceCourse(physics, [x, y, z], physics.physics_track_half_width());
 
     const colors = ['#b9ef42', '#34d6c6', '#45b9dd', '#24d46b', '#70db31', '#d8e52d', '#f0bf33', '#ff8a38', '#f05e52', '#c766ef'];
@@ -1041,6 +1075,39 @@ function updateRaceUi() {
   }
 }
 
+const DRIFT_PHASE_NAMES = ['GRIP', 'ENTRY', 'SLIDE', 'RECOVERY', 'SPIN'];
+function updateDriftUi() {
+  if (!DRIFT_PLAYGROUND) return;
+  const phase = api.physics_arcade_drift_phase();
+  const betaDeg = api.physics_body_slip_angle(0) * 180 / Math.PI;
+  const yawDegS = api.physics_yaw_rate(0) * 180 / Math.PI;
+  const rawSteering = api.physics_input_stage_steering(0);
+  const assistedSteering = api.physics_input_stage_steering(2);
+  const correction = api.physics_arcade_drift_correction();
+  const speedKmh = api.physics_speed(0) * 3.6;
+  const axleSlipDeg = [0, 1, 2, 3].map((wheel) => Math.abs(api.physics_wheel_slip_angle(0, wheel) * 180 / Math.PI));
+  const frontSlipDeg = (axleSlipDeg[0] + axleSlipDeg[1]) * 0.5;
+  const rearSlipDeg = (axleSlipDeg[2] + axleSlipDeg[3]) * 0.5;
+  const phaseName = DRIFT_PHASE_NAMES[phase] || 'GRIP';
+  const outcome = classifyDriftOutcome({ phase, betaDeg, speedKmh, rawSteering, frontSlipDeg, rearSlipDeg });
+  document.querySelector('#driftPhase').textContent = phaseName;
+  document.querySelector('#driftOutcome').textContent = outcome.label;
+  document.querySelector('#driftHudBeta').textContent = `${betaDeg.toFixed(1)}°`;
+  document.querySelector('#driftHudYaw').textContent = `${yawDegS.toFixed(0)}°/s`;
+  document.querySelector('#driftRaw').textContent = rawSteering.toFixed(2);
+  document.querySelector('#driftAssist').textContent = assistedSteering.toFixed(2);
+  document.querySelector('#driftWheel').textContent = `${(api.physics_wheel_steer_angle(0, 0) * 180 / Math.PI).toFixed(1)}°`;
+  document.querySelector('#driftCorrection').textContent = correction.toFixed(2);
+  document.querySelector('#driftBeta').textContent = `${betaDeg.toFixed(1)}°`;
+  document.querySelector('#driftYaw').textContent = `${yawDegS.toFixed(0)}°/s`;
+  document.querySelector('#driftRearLong').textContent = [2, 3]
+    .map((wheel) => `${(api.physics_wheel_longitudinal_slip(0, wheel) * 100).toFixed(0)}%`).join(' / ');
+  document.querySelector('#driftRearLat').textContent = [2, 3]
+    .map((wheel) => `${(api.physics_wheel_slip_angle(0, wheel) * 180 / Math.PI).toFixed(1)}°`).join(' / ');
+  document.querySelector('#driftHud').dataset.phase = phaseName.toLowerCase();
+  document.querySelector('#driftHud').dataset.outcome = outcome.kind;
+}
+
 function updateUi() {
   ui.speed.textContent = (api.physics_speed(0) * 3.6).toFixed(1);
   ui.rpm.textContent = Math.round(api.physics_rpm(0));
@@ -1049,6 +1116,9 @@ function updateUi() {
   if (SIMULATION_LAB) {
     ui.lap.textContent = 'FLAT PROVING GROUND';
     ui.trackLength.textContent = '1 ENGINEERING VEHICLE';
+  } else if (DRIFT_PLAYGROUND) {
+    ui.lap.textContent = 'DRIFT SECTION · OPEN';
+    ui.trackLength.textContent = 'R / ENTER RESTARTS ENTRY';
   } else {
     const progress = api.physics_track_progress(0);
     ui.lap.textContent = `${Math.min(raceView?.totalLaps ?? 3, (raceView?.player?.completedLaps ?? 0) + 1)} / ${raceView?.totalLaps ?? 3} · ${Math.round(progress * 100)}%`;
@@ -1078,6 +1148,7 @@ function updateUi() {
     document.querySelector('#labAy').textContent = `${api.physics_lateral_acceleration(0).toFixed(2)} m/s²`;
     document.querySelector('#labWater').textContent = `${api.physics_road_water_depth_mm(0).toFixed(2)} mm`;
   }
+  updateDriftUi();
   updateRaceUi();
 }
 
@@ -1351,6 +1422,17 @@ function frame(now) {
     brake: input.brake,
     clutch: input.clutch,
     handbrake: input.handbrake,
+    arcadeDrift: DRIFT_PLAYGROUND ? {
+        phase: DRIFT_PHASE_NAMES[api.physics_arcade_drift_phase()] || 'GRIP',
+        engagement: api.physics_arcade_drift_engagement(),
+        correction: api.physics_arcade_drift_correction(),
+        bodySlipRad: api.physics_body_slip_angle(0),
+        yawRateRadS: api.physics_yaw_rate(0),
+        physicalFrontSteerRad: api.physics_wheel_steer_angle(0, 0),
+        wheelLongitudinalSlip: [0, 1, 2, 3].map((wheel) => api.physics_wheel_longitudinal_slip(0, wheel)),
+        wheelSlipAngleRad: [0, 1, 2, 3].map((wheel) => api.physics_wheel_slip_angle(0, wheel)),
+        wheelTransientSlipAngleRad: [0, 1, 2, 3].map((wheel) => api.physics_wheel_transient_slip_angle(0, wheel)),
+      } : null,
     stages: {
       raw: readInputStage(0),
       normalized: readInputStage(1),
@@ -1394,6 +1476,10 @@ try {
     enableAudio();
     resetRace();
   });
+  document.querySelector('#driftRestart')?.addEventListener('click', () => {
+    enableAudio();
+    resetRace();
+  });
   document.querySelector('#audioToggle').addEventListener('click', toggleAudio);
   ui.driveProfile.addEventListener('change', () => setDriveProfile(ui.driveProfile.value));
   ui.keyboardPolicy.addEventListener('change', () => setKeyboardAdaptive(ui.keyboardPolicy.value === 'adaptive'));
@@ -1427,12 +1513,13 @@ try {
   ui.calibrationStatus.textContent = inputConfig.calibratedDevice ? `SAVED · ${inputConfig.calibratedDevice}` : 'DEFAULT RANGE';
   benchmarkPhysics();
   setDriveProfile(inputConfig.driveProfile, false);
-  if (raceDirector) resetRace();
+  if (DRIFT_PLAYGROUND || raceDirector) resetRace();
   if (SIMULATION_LAB) installSimulationLab();
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
   status.textContent = SIMULATION_LAB
     ? 'SIMULATION LAB ONLINE · ENGINEERING REFERENCE · RAW INPUT'
-    : ARCADE_DEMO ? 'ARCADE FUN ONLINE · SAME WASM PLANT · AUTHORED PARAMETERS' : '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
+    : DRIFT_PLAYGROUND ? 'DRIFT PLAYGROUND ONLINE · INPUT ASSIST ONLY · COMMON PHYSICAL PLANT'
+      : ARCADE_DEMO ? 'ARCADE FUN ONLINE · SAME WASM PLANT · AUTHORED PARAMETERS' : '3D CORE ONLINE · WEBGL2 · FIXED DT 0.001 s';
   status.classList.add('ready');
   requestAnimationFrame(frame);
 } catch (error) {

@@ -10,7 +10,7 @@
 <body>
   <main>
     <header>
-      <div><span class="eyebrow">WEBGL2 · WASM · 1000 HZ · 10 VEHICLES</span><h1>Vehicle Dynamics Lab</h1><nav><a href="./">CIRCUIT</a><a href="./?demo=arcade">ARCADE FUN</a><a href="./?demo=simulation-lab">SIMULATION LAB</a></nav></div>
+      <div><span class="eyebrow">WEBGL2 · WASM · 1000 HZ · 10 VEHICLES</span><h1>Vehicle Dynamics Lab</h1><nav><a href="./">CIRCUIT</a><a href="./?demo=arcade">ARCADE FUN</a><a href="./?demo=arcade&amp;playground=drift">DRIFT TEST</a><a href="./?demo=simulation-lab">SIMULATION LAB</a></nav></div>
       <div id="status" class="status">Loading physics.wasm…</div>
     </header>
     <section class="layout">
@@ -31,6 +31,11 @@
             <strong id="raceTime">0:00.000</strong>
             <small>BEST <b id="raceBestLap">—</b></small>
           </div>
+        </section>
+        <section id="driftHud" class="drift-hud" aria-label="Drift status" hidden>
+          <span id="driftPhase">GRIP</span>
+          <strong id="driftOutcome">SET UP THE ENTRY</strong>
+          <small>β <b id="driftHudBeta">0.0°</b> · YAW <b id="driftHudYaw">0°/s</b></small>
         </section>
         <div id="raceCountdown" class="race-countdown" role="status" aria-live="assertive" hidden>
           <span id="raceCountdownLabel">3</span>
@@ -66,6 +71,18 @@
         <div class="device"><label>CAMERA</label><select id="cameraPreset"><option value="chase">CHASE · C</option><option value="hood">HOOD · C</option><option value="cockpit">COCKPIT · C</option></select></div>
         <div class="device setup"><label>TELEMETRY AUDIO</label><span><button id="audioToggle">ENABLE · M</button></span></div>
         <div class="snapshot"><button id="saveSnapshot">SAVE SNAPSHOT · K</button><button id="restoreSnapshot">RESTORE · L</button><span id="snapshotStatus">NOT SAVED</span></div>
+        <section id="driftPanel" class="drift-panel" hidden>
+          <h2>Keyboard drift experiment</h2>
+          <p>Set a turn with A/D, use the physical handbrake with <b>Space</b>, then keep your intended direction. Fine countersteer is assisted only after the car actually slides.</p>
+          <button id="driftRestart">RESTART ENTRY · R / ENTER</button>
+          <div class="drift-grid">
+            <span>RAW KEY <b id="driftRaw">0.00</b></span><span>ASSISTED <b id="driftAssist">0.00</b></span>
+            <span>ROAD WHEEL <b id="driftWheel">0.0°</b></span><span>ASSIST <b id="driftCorrection">0.00</b></span>
+            <span>BODY SLIP β <b id="driftBeta">0.0°</b></span><span>YAW RATE <b id="driftYaw">0°/s</b></span>
+            <span>REAR κ <b id="driftRearLong">0% / 0%</b></span><span>REAR α <b id="driftRearLat">0° / 0°</b></span>
+          </div>
+          <p class="drift-boundary">Physics plant unchanged · no yaw torque · no grip multiplier · no automatic handbrake/throttle</p>
+        </section>
         <section id="labPanel" class="lab-panel" hidden>
           <h2>Reproducible maneuvers</h2>
           <p class="lab-disclaimer">Physical-plausibility/regression evidence only. Parameters are authored/estimated—not a measured fit, measured correlation, or certification.</p>

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 
-const version = await fetch('http://127.0.0.1:9224/json/version').then((response) => response.json());
+const debugPort = process.env.CHROME_DEBUG_PORT || '9224';
+const demoUrl = process.env.DEMO_URL || 'http://127.0.0.1:8091/?demo=arcade';
+const version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then((response) => response.json());
 const socket = new WebSocket(version.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => {
   socket.addEventListener('open', resolve, { once: true });
@@ -28,7 +30,7 @@ const { targetId } = await command('Target.createTarget', { url: 'about:blank' }
 const { sessionId } = await command('Target.attachToTarget', { targetId, flatten: true });
 await command('Runtime.enable', {}, sessionId);
 await command('Page.enable', {}, sessionId);
-await command('Page.navigate', { url: 'http://127.0.0.1:8091/?demo=arcade' }, sessionId);
+await command('Page.navigate', { url: demoUrl }, sessionId);
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 async function evaluate(expression) {
   const result = await command('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
@@ -50,7 +52,7 @@ async function key(code, down) {
 async function reset() {
   await key('KeyR', true);
   await key('KeyR', false);
-  await sleep(150);
+  await sleep(3_250);
 }
 async function metrics(label) {
   return evaluate(`({
@@ -75,7 +77,7 @@ await reset();
 await key('KeyW', true);
 await sleep(1_800);
 await key('KeyA', true);
-await sleep(350);
+await sleep(250);
 await key('KeyA', false);
 await sleep(450);
 await key('KeyW', false);
@@ -87,14 +89,14 @@ await sleep(1_700);
 await key('KeyD', true);
 await sleep(300);
 await key('Space', true);
-await sleep(450);
+await sleep(350);
 await key('Space', false);
 await key('KeyD', false);
 await key('KeyA', true);
-await sleep(900);
+await sleep(700);
 await key('KeyA', false);
 await key('KeyW', false);
-await sleep(600);
+await sleep(900);
 runs.push(await metrics('handbrake-and-countersteer'));
 
 console.log(JSON.stringify({ browser: version.Browser, runs, exceptions }, null, 2));

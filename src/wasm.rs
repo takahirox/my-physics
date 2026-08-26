@@ -3,7 +3,10 @@
 //! default unsafe-code lint; no unsafe block or pointer access is used.
 #![allow(unsafe_code)]
 
-use crate::{DriverInput, Fidelity, KeyboardSteeringAssist, PhysicsWorld, Quat, Snapshot, VehiclePreset};
+use crate::{
+    ArcadeDriftSensors, ArcadeKeyboardDriftAssist, DriverInput, Fidelity, KeyboardSteeringAssist, PhysicsWorld, Quat,
+    Snapshot, VehiclePreset,
+};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -25,6 +28,7 @@ const PROFILE_ARCADE: u8 = 3;
 const ACCESSIBLE_LATERAL_ACCEL_MPS2: f64 = 7.5;
 const SPORT_LATERAL_ACCEL_MPS2: f64 = 10.0;
 const ARCADE_LATERAL_ACCEL_MPS2: f64 = 12.0;
+const DRIFT_PLAYGROUND_ENTRY_SPEED_MPS: f64 = 75.0 / 3.6;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct InputPipelineState {
@@ -39,6 +43,7 @@ struct InputPipelineState {
 #[derive(Clone, Copy, Debug, Default)]
 struct KeyboardInputState {
     assist: KeyboardSteeringAssist,
+    drift_assist: ArcadeKeyboardDriftAssist,
     command: DriverInput,
     transitioning: bool,
     pipeline: InputPipelineState,
@@ -89,6 +94,17 @@ fn validation_report() -> &'static Mutex<Option<crate::validation::ScenarioRepor
 }
 fn yaw(q: Quat) -> f64 {
     (2.0 * (q.w * q.y + q.x * q.z)).atan2(1.0 - 2.0 * (q.y * q.y + q.x * q.x))
+}
+
+fn player_drift_sensors(world: &PhysicsWorld) -> ArcadeDriftSensors {
+    world.vehicles.first().map_or(ArcadeDriftSensors::default(), |vehicle| {
+        let local_velocity = vehicle.state.orientation.conjugate().rotate(vehicle.state.linear_velocity_mps);
+        ArcadeDriftSensors {
+            speed_mps: vehicle.telemetry.speed_mps,
+            yaw_rate_rad_s: vehicle.telemetry.yaw_rate_rad_s,
+            body_slip_rad: local_velocity.x.atan2((-local_velocity.z).abs().max(1.0e-9)),
+        }
+    })
 }
 
 fn profile_lateral_accel_target(profile: u8) -> Option<f64> {
@@ -150,6 +166,43 @@ pub extern "C" fn physics_lab_reset_free_drive() {
     KEYBOARD_ASSIST_ENABLED.store(false, Ordering::Relaxed);
 }
 
+/// Reproducible entry state for the Arcade keyboard drift experiment. This is
+/// scenario setup only: after the reset, every force comes from the unchanged
+/// Arcade vehicle, road and common physical plant.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_arcade_drift_playground_reset() {
+    DEMO_VEHICLE_PRESET.store(2, Ordering::Relaxed);
+    with_world(|world| *world = PhysicsWorld::arcade_drift_playground());
+    PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
+    RACE_RUNNING.store(true, Ordering::Relaxed);
+    PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
+    KEYBOARD_ASSIST_ENABLED.store(true, Ordering::Relaxed);
+    let mut state = KeyboardInputState::default();
+    state.pipeline.device_kind = 1;
+    *keyboard().lock().unwrap_or_else(|error| error.into_inner()) = state;
+    physics_set_experience_profile(PROFILE_ARCADE.into());
+    with_world(|world| {
+        let Some(vehicle) = world.vehicles.first_mut() else {
+            return;
+        };
+        vehicle.state.position_m = crate::Vec3::new(0.0, 0.55, 0.0);
+        vehicle.state.orientation = crate::Quat::IDENTITY;
+        vehicle.previous_position_m = vehicle.state.position_m;
+        vehicle.previous_orientation = vehicle.state.orientation;
+        vehicle.state.linear_velocity_mps = crate::Vec3::FORWARD * DRIFT_PLAYGROUND_ENTRY_SPEED_MPS;
+        vehicle.state.angular_velocity_rad_s = crate::Vec3::ZERO;
+        vehicle.state.powertrain.gear = 3;
+        vehicle.state.powertrain.clutch_engagement = 1.0;
+        for (wheel, definition) in vehicle.state.wheels.iter_mut().zip(&vehicle.definition.wheels) {
+            wheel.angular_velocity_rad_s = DRIFT_PLAYGROUND_ENTRY_SPEED_MPS / definition.radius_m;
+        }
+        let ratio = vehicle.definition.transmission.gear_ratios[2] * vehicle.definition.transmission.final_drive;
+        vehicle.state.powertrain.engine_rpm =
+            vehicle.state.wheels[2].angular_velocity_rad_s * ratio * 60.0 / core::f64::consts::TAU;
+        vehicle.update_telemetry(crate::Vec3::ZERO);
+    });
+}
+
 fn set_analog_input(device_kind: u8, raw: DriverInput, normalized: DriverInput) {
     PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
     let normalized = normalized.sanitized();
@@ -160,6 +213,7 @@ fn set_analog_input(device_kind: u8, raw: DriverInput, normalized: DriverInput) 
     });
     let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
     state.assist.reset();
+    state.drift_assist.reset();
     state.command = normalized;
     state.transitioning = false;
     state.pipeline.raw = raw;
@@ -209,6 +263,7 @@ pub extern "C" fn physics_set_device_input(
         let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
         if state.pipeline.device_kind != device_kind {
             state.assist.set_output(current);
+            state.drift_assist.disengage_at(current);
             state.transitioning = true;
         }
         state.command = normalized;
@@ -233,6 +288,7 @@ pub extern "C" fn physics_set_keyboard_input(
         let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
         if state.pipeline.device_kind != 1 {
             state.assist.set_output(current);
+            state.drift_assist.disengage_at(current);
             state.transitioning = true;
         }
         state.command =
@@ -250,7 +306,8 @@ pub extern "C" fn physics_step(steps: u32) {
         for _ in 0..steps {
             let input_mode = PLAYER_INPUT_MODE.load(Ordering::Relaxed);
             if !PLAYER_AUTOPILOT.load(Ordering::Relaxed) && matches!(input_mode, 1 | 2) {
-                let speed = w.vehicles.first().map_or(0.0, |vehicle| vehicle.telemetry.speed_mps);
+                let drift_sensors = player_drift_sensors(w);
+                let speed = drift_sensors.speed_mps;
                 let mut keyboard = keyboard().lock().unwrap_or_else(|error| error.into_inner());
                 let command = keyboard.command;
                 let profile = EXPERIENCE_PROFILE.load(Ordering::Relaxed);
@@ -259,7 +316,7 @@ pub extern "C" fn physics_step(steps: u32) {
                 let gamepad_assist = input_mode == 2 && device_kind == 2 && profile != PROFILE_SIMULATION;
                 let assist_enabled = keyboard_assist || gamepad_assist;
                 let target_lateral_accel = profile_lateral_accel_target(profile).unwrap_or(SPORT_LATERAL_ACCEL_MPS2);
-                let steering = if assist_enabled || keyboard.transitioning {
+                let base_steering = if assist_enabled || keyboard.transitioning {
                     let policy_speed = if assist_enabled { speed } else { 0.0 };
                     let output = keyboard.assist.update_for_target(
                         command.steering,
@@ -278,6 +335,13 @@ pub extern "C" fn physics_step(steps: u32) {
                     output
                 } else {
                     command.steering
+                };
+                let arcade_keyboard = profile == PROFILE_ARCADE && input_mode == 1 && keyboard_assist;
+                let steering = if arcade_keyboard {
+                    keyboard.drift_assist.update(base_steering, command, drift_sensors, w.config.fixed_dt_s)
+                } else {
+                    keyboard.drift_assist.disengage_at(base_steering);
+                    base_steering
                 };
                 let policy = DriverInput { steering, ..command };
                 keyboard.pipeline.policy = policy;
@@ -414,7 +478,9 @@ pub extern "C" fn physics_track_progress(index: u32) -> f64 {
 pub extern "C" fn physics_set_player_autopilot(enabled: u32) {
     PLAYER_AUTOPILOT.store(enabled != 0, Ordering::Relaxed);
     if enabled != 0 {
-        keyboard().lock().unwrap_or_else(|error| error.into_inner()).assist.reset();
+        let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
+        state.assist.reset();
+        state.drift_assist.reset();
     }
 }
 #[unsafe(no_mangle)]
@@ -433,8 +499,8 @@ pub extern "C" fn physics_set_experience_profile(profile: u32) {
     let input_mode = PLAYER_INPUT_MODE.load(Ordering::Relaxed);
     with_world(|world| {
         if let Some(vehicle) = world.vehicles.first_mut() {
-            // Profiles configure controllers only. ABS/TC retain the authored
-            // vehicle configuration; Accessible additionally enables ESC.
+            // Profiles configure steering policy and explicit stability aid
+            // selection; TC remains whatever the selected world authored.
             vehicle.driver_aids.stability_control_enabled = profile == PROFILE_ACCESSIBLE;
         }
         if changed {
@@ -443,6 +509,7 @@ pub extern "C" fn physics_set_experience_profile(profile: u32) {
             let active_policy_changes = input_mode == 1 || (input_mode == 2 && state.pipeline.device_kind == 2);
             if active_policy_changes {
                 state.assist.set_output(current);
+                state.drift_assist.disengage_at(current);
                 state.transitioning = true;
             }
         }
@@ -470,6 +537,7 @@ pub extern "C" fn physics_set_keyboard_assist(enabled: u32) {
             let current = world.vehicles.first().map_or(0.0, |vehicle| vehicle.input.steering);
             let mut state = keyboard().lock().unwrap_or_else(|error| error.into_inner());
             state.assist.set_output(current);
+            state.drift_assist.disengage_at(current);
             state.transitioning = true;
         });
     }
@@ -528,6 +596,18 @@ pub extern "C" fn physics_input_device() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_input_transitioning() -> u32 {
     u32::from(keyboard().lock().unwrap_or_else(|error| error.into_inner()).transitioning)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_arcade_drift_phase() -> u32 {
+    keyboard().lock().unwrap_or_else(|error| error.into_inner()).drift_assist.phase() as u32
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_arcade_drift_engagement() -> f64 {
+    keyboard().lock().unwrap_or_else(|error| error.into_inner()).drift_assist.engagement()
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_arcade_drift_correction() -> f64 {
+    keyboard().lock().unwrap_or_else(|error| error.into_inner()).drift_assist.correction()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_input_stage_steering(stage: u32) -> f64 {
@@ -777,6 +857,22 @@ pub extern "C" fn physics_gear(i: u32) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_steering(i: u32) -> f64 {
     read_vehicle(i, |v| v.control.steering)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_wheel_steer_angle(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.state.wheels.get(wheel as usize).map_or(f64::NAN, |wheel| wheel.steer_angle_rad))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_wheel_longitudinal_slip(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.state.wheels.get(wheel as usize).map_or(f64::NAN, |wheel| wheel.longitudinal_slip))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_wheel_slip_angle(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.state.wheels.get(wheel as usize).map_or(f64::NAN, |wheel| wheel.slip_angle_rad))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_wheel_transient_slip_angle(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.state.wheels.get(wheel as usize).map_or(f64::NAN, |wheel| wheel.transient_slip_angle_rad))
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_esc_active(i: u32) -> f64 {

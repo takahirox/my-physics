@@ -68,3 +68,24 @@ export function effectEmissionRates(telemetry = {}) {
     sparksPerSecond: intensity.sparks * EFFECT_LIMITS.sparksPerSecond,
   };
 }
+
+/** Classifies observable drift-playground outcomes without feeding the plant. */
+export function classifyDriftOutcome(state = {}) {
+  const phase = Math.max(0, Math.min(4, Math.trunc(finite(state.phase))));
+  const betaDeg = Math.abs(finite(state.betaDeg));
+  const speedKmh = Math.max(0, finite(state.speedKmh));
+  const rawSteering = Math.abs(finite(state.rawSteering));
+  const frontSlipDeg = Math.abs(finite(state.frontSlipDeg));
+  const rearSlipDeg = Math.abs(finite(state.rearSlipDeg));
+  if (phase === 4 || betaDeg >= 55) return { kind: 'spin', label: 'SPIN — RESTART AND ADJUST ENTRY' };
+  if (phase === 3 && (speedKmh < 35 || betaDeg >= 35)) {
+    return { kind: 'poor-exit', label: 'POOR EXIT — REDUCE ENTRY ANGLE' };
+  }
+  if (phase <= 1 && rawSteering >= 0.5 && speedKmh >= 40 && frontSlipDeg >= 8 && frontSlipDeg >= rearSlipDeg + 3) {
+    return { kind: 'understeer', label: 'UNDERSTEER — CHANGE SPEED OR ENTRY' };
+  }
+  if (phase === 2 && betaDeg >= 8) return { kind: 'slide', label: 'CONTROLLED SLIDE — HOLD YOUR LINE' };
+  if (phase === 3) return { kind: 'recovery', label: 'RECOVERY — ACCELERATE OUT' };
+  if (phase === 1) return { kind: 'entry', label: 'ENTRY ARMED — CREATE PHYSICAL SLIP' };
+  return { kind: 'grip', label: 'GRIP — SET UP THE ENTRY' };
+}

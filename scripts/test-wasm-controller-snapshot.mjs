@@ -182,6 +182,9 @@ function pipelineState() {
     physics.physics_input_applied_step(),
     physics.physics_input_device(),
     physics.physics_input_transitioning(),
+    physics.physics_arcade_drift_phase(),
+    physics.physics_arcade_drift_engagement(),
+    physics.physics_arcade_drift_correction(),
     ...stages,
   ];
 }
@@ -241,6 +244,41 @@ physics.physics_step(120);
 assert.deepEqual(publicState(), expectedArcade, 'Arcade browser snapshot must deterministically re-simulate');
 physics.physics_reset();
 assert.equal(physics.physics_demo_vehicle_preset(), 2, 'reset preserves selected Arcade physical definition');
+physics.physics_select_demo_vehicle_preset(1);
+
+// Mid-slide browser snapshots include the complete Arcade keyboard controller,
+// not only the physical world. Non-steering driver commands remain exact
+// passthrough values while policy steering is allowed to countersteer.
+physics.physics_arcade_drift_playground_reset();
+assert.equal(physics.physics_vehicle_count(), 1, 'drift playground must isolate one high-fidelity vehicle');
+assert(Math.abs(physics.physics_speed(0) * 3.6 - 75) < 1, 'drift playground did not restore repeatable entry speed');
+physics.physics_set_keyboard_input(-1, 0.35, 0, 0, 0, 0);
+physics.physics_step(350);
+physics.physics_set_keyboard_input(-1, 0.35, 0, 0, 1, 0);
+physics.physics_step(200);
+physics.physics_set_keyboard_input(-1, 0.70, 0, 0, 1, 0);
+physics.physics_step(600);
+assert.equal(physics.physics_arcade_drift_phase(), 2, 'playground sequence did not enter the physical slide phase');
+assert(Math.abs(physics.physics_body_slip_angle(0)) > 8 * Math.PI / 180, 'playground sequence did not create body slip');
+for (const field of ['throttle', 'brake', 'clutch', 'handbrake', 'gear']) {
+  const getter = physics[`physics_input_stage_${field}`];
+  assert.equal(getter(2), getter(0), `Arcade drift policy changed player ${field}`);
+}
+const savedDriftPipeline = pipelineState();
+physics.physics_snapshot_save();
+physics.physics_step(300);
+const expectedDrift = [...publicState(), ...pipelineState()];
+physics.physics_set_keyboard_input(1, 0, 1, 1, 0, -1);
+physics.physics_set_experience_profile(2);
+physics.physics_step(50);
+assert.equal(physics.physics_snapshot_restore(), 1);
+assert.deepEqual(pipelineState(), savedDriftPipeline, 'mid-slide snapshot did not restore drift-controller state');
+physics.physics_step(300);
+assert.deepEqual(
+  [...publicState(), ...pipelineState()],
+  expectedDrift,
+  'mid-slide snapshot did not reproduce physical and controller state',
+);
 physics.physics_select_demo_vehicle_preset(1);
 
 function scheduleRun(refreshHz) {

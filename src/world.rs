@@ -152,6 +152,20 @@ impl PhysicsWorld {
         world.vehicles.push(vehicle);
         world
     }
+    /// Single-vehicle, collision-free composition for repeatable Arcade drift
+    /// controller experiments. Vehicle and tire parameters are the unchanged
+    /// `ArcadeFun` definition; only the application-level proving ground and
+    /// LOD composition differ from the ten-car circuit demo.
+    pub fn arcade_drift_playground() -> Self {
+        let mut world = Self::new(SimulationConfig { automatic_lod: false, ..SimulationConfig::default() });
+        let mut vehicle = Vehicle::new(VehicleDefinition::arcade_fun());
+        vehicle.driver_aids.traction_control_enabled = false;
+        vehicle.driver_aids.stability_control_enabled = false;
+        vehicle.target_fidelity = 1.0;
+        vehicle.fidelity = 1.0;
+        world.vehicles.push(vehicle);
+        world
+    }
     pub fn demo_with_preset(vehicle_count: usize, preset: VehiclePreset) -> Self {
         let mut w =
             Self::new(SimulationConfig { ground_surface: GroundSurface::DemoCircuit, ..SimulationConfig::default() });

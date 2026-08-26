@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { EFFECT_LIMITS, effectEmissionRates, effectIntensities } from '../web/presentation-config.mjs';
+import { EFFECT_LIMITS, classifyDriftOutcome, effectEmissionRates, effectIntensities } from '../web/presentation-config.mjs';
 
 test('effects are absent for stationary neutral telemetry', () => {
   const effects = effectIntensities();
@@ -45,4 +45,16 @@ test('all effect intensities and rates remain bounded under hostile input', () =
   assert.ok(rates.smokePerSecond.every((value) => value <= EFFECT_LIMITS.smokePerSecondPerWheel));
   assert.ok(rates.sprayPerSecond.every((value) => value <= EFFECT_LIMITS.sprayPerSecondPerWheel));
   assert.ok(rates.sparksPerSecond <= EFFECT_LIMITS.sparksPerSecond);
+});
+
+test('drift presentation distinguishes grip, understeer, slide, recovery, poor exit and spin', () => {
+  assert.equal(classifyDriftOutcome().kind, 'grip');
+  assert.equal(
+    classifyDriftOutcome({ phase: 1, speedKmh: 75, rawSteering: 1, frontSlipDeg: 13, rearSlipDeg: 5 }).kind,
+    'understeer',
+  );
+  assert.equal(classifyDriftOutcome({ phase: 2, betaDeg: 18, speedKmh: 65 }).kind, 'slide');
+  assert.equal(classifyDriftOutcome({ phase: 3, betaDeg: 3, speedKmh: 60 }).kind, 'recovery');
+  assert.equal(classifyDriftOutcome({ phase: 3, betaDeg: 38, speedKmh: 25 }).kind, 'poor-exit');
+  assert.equal(classifyDriftOutcome({ phase: 4, betaDeg: 70 }).kind, 'spin');
 });

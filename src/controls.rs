@@ -69,6 +69,191 @@ impl KeyboardSteeringAssist {
     }
 }
 
+/// Observable state of the Arcade keyboard drift controller. This controller
+/// lives in the input-policy layer and never writes chassis or tire forces.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArcadeDriftPhase {
+    #[default]
+    Grip = 0,
+    Entry = 1,
+    Slide = 2,
+    Recovery = 3,
+    Spin = 4,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ArcadeDriftSensors {
+    pub speed_mps: f64,
+    pub yaw_rate_rad_s: f64,
+    pub body_slip_rad: f64,
+}
+
+/// Deterministic keyboard intent controller used only by the Arcade profile.
+///
+/// Entry is armed by an ordinary driver action (handbrake, service brake or a
+/// throttle lift while steering). Until the physical plant produces both body
+/// slip and yaw, output is exactly the existing speed-sensitive steering
+/// command. Once a slide exists, this controller can supply continuous fine
+/// countersteer that a digital key cannot express. Every non-steering control
+/// remains byte-for-byte the player's command.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArcadeKeyboardDriftAssist {
+    output: f64,
+    phase: ArcadeDriftPhase,
+    engagement: f64,
+    entry_window_s: f64,
+    lift_window_s: f64,
+    slide_time_s: f64,
+    stable_time_s: f64,
+    drift_direction: f64,
+    previous_throttle: f64,
+    correction: f64,
+}
+
+impl Default for ArcadeKeyboardDriftAssist {
+    fn default() -> Self {
+        Self {
+            output: 0.0,
+            phase: ArcadeDriftPhase::Grip,
+            engagement: 0.0,
+            entry_window_s: 0.0,
+            lift_window_s: 0.0,
+            slide_time_s: 0.0,
+            stable_time_s: 0.0,
+            drift_direction: 0.0,
+            previous_throttle: 0.0,
+            correction: 0.0,
+        }
+    }
+}
+
+impl ArcadeKeyboardDriftAssist {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Leaves the drift state while preserving the currently applied rack
+    /// command for a bumpless profile or device transition.
+    pub fn disengage_at(&mut self, steering: f64) {
+        self.reset();
+        self.output = steering.clamp(-1.0, 1.0);
+    }
+
+    pub fn phase(&self) -> ArcadeDriftPhase {
+        self.phase
+    }
+
+    pub fn engagement(&self) -> f64 {
+        self.engagement
+    }
+
+    pub fn correction(&self) -> f64 {
+        self.correction
+    }
+
+    pub fn output(&self) -> f64 {
+        self.output
+    }
+
+    pub fn update(&mut self, base_steering: f64, input: DriverInput, sensors: ArcadeDriftSensors, dt_s: f64) -> f64 {
+        let dt = dt_s.clamp(0.0, 0.05);
+        let input = input.sanitized();
+        let intent = input.steering;
+        let speed = sensors.speed_mps.max(0.0);
+        let beta = sensors.body_slip_rad.clamp(-core::f64::consts::FRAC_PI_2, core::f64::consts::FRAC_PI_2);
+        let yaw_rate = sensors.yaw_rate_rad_s.clamp(-5.0, 5.0);
+
+        let lifted = self.previous_throttle >= 0.55 && input.throttle <= 0.18;
+        self.previous_throttle = input.throttle;
+        self.lift_window_s = if lifted { 0.45 } else { (self.lift_window_s - dt).max(0.0) };
+        let deliberate_entry = speed >= 10.0
+            && intent.abs() >= 0.5
+            && (input.handbrake >= 0.25 || input.brake >= 0.35 || self.lift_window_s > 0.0);
+        if deliberate_entry {
+            self.entry_window_s = 0.9;
+            self.drift_direction = intent.signum();
+        } else {
+            self.entry_window_s = (self.entry_window_s - dt).max(0.0);
+        }
+
+        let entry_matches_intent = self.drift_direction != 0.0
+            && beta * self.drift_direction < -6.0_f64.to_radians()
+            && yaw_rate * self.drift_direction < -0.18;
+        if matches!(self.phase, ArcadeDriftPhase::Grip | ArcadeDriftPhase::Entry) {
+            if self.entry_window_s > 0.0 {
+                self.phase = ArcadeDriftPhase::Entry;
+            } else {
+                self.phase = ArcadeDriftPhase::Grip;
+            }
+            if self.entry_window_s > 0.0 && entry_matches_intent {
+                self.phase = ArcadeDriftPhase::Slide;
+                self.engagement = 0.0;
+                self.slide_time_s = 0.0;
+                self.stable_time_s = 0.0;
+            }
+        }
+
+        let active =
+            matches!(self.phase, ArcadeDriftPhase::Slide | ArcadeDriftPhase::Recovery | ArcadeDriftPhase::Spin);
+        if !active {
+            self.engagement = 0.0;
+            self.correction = 0.0;
+            self.output = base_steering.clamp(-1.0, 1.0);
+            return self.output;
+        }
+
+        let same_intent = intent.abs() >= 0.5 && intent.signum() == self.drift_direction;
+        self.slide_time_s += dt;
+        self.phase = if beta.abs() >= 55.0_f64.to_radians() {
+            ArcadeDriftPhase::Spin
+        } else if same_intent {
+            ArcadeDriftPhase::Slide
+        } else {
+            ArcadeDriftPhase::Recovery
+        };
+        // Once the rear has physically broken away, positive body slip needs
+        // positive road-wheel countersteer (and vice versa). A/D remains the
+        // desired turn direction, while the continuously-valued rack command
+        // can therefore oppose the held digital key during a real slide.
+        let slip_countersteer =
+            beta.signum() * if same_intent { 0.04 + beta.abs() * 0.35 } else { 0.08 + beta.abs() * 0.70 };
+        let yaw_countersteer = yaw_rate * if same_intent { 0.12 } else { 0.30 };
+        let drift_target = (slip_countersteer + yaw_countersteer).clamp(-0.72, 0.72);
+
+        let stable = beta.abs() < 4.0_f64.to_radians() && yaw_rate.abs() < 0.22;
+        self.stable_time_s = if stable { self.stable_time_s + dt } else { 0.0 };
+        if self.stable_time_s >= 0.25 || speed < 6.0 {
+            self.phase = ArcadeDriftPhase::Recovery;
+            self.engagement = (self.engagement - 4.0 * dt).max(0.0);
+        } else {
+            // Leave a short, explicit entry window for the player's physical
+            // handbrake/lift rotation, then hand over quickly enough to catch
+            // the slide. Immediate correction at six degrees cancels the
+            // intended drift before it becomes readable.
+            if self.slide_time_s >= 0.28 {
+                self.engagement = (self.engagement + 8.0 * dt).min(1.0);
+            }
+        }
+
+        let target = base_steering + (drift_target - base_steering) * self.engagement;
+        let rate_per_s = if target.signum() != self.output.signum() && self.output.abs() > 0.01 { 6.0 } else { 4.5 };
+        self.output += (target - self.output).clamp(-rate_per_s * dt, rate_per_s * dt);
+        self.output = self.output.clamp(-1.0, 1.0);
+        self.correction = self.output - base_steering;
+
+        if self.engagement <= 0.0 && self.stable_time_s >= 0.25 {
+            self.phase = ArcadeDriftPhase::Grip;
+            self.drift_direction = 0.0;
+            self.entry_window_s = 0.0;
+            self.slide_time_s = 0.0;
+            self.correction = 0.0;
+            self.output = base_steering.clamp(-1.0, 1.0);
+        }
+        self.output
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DriverInput {
     pub steering: f64,

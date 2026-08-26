@@ -42,6 +42,31 @@ for (let retry = 0; retry < 150; retry += 1) {
   await sleep(100);
 }
 assert.equal(await evaluate("document.querySelector('#status')?.classList.contains('ready')"), true);
+const overlayLayout = await evaluate(`(() => {
+  const canvas = document.querySelector('#track');
+  const panel = document.querySelector('aside');
+  const canvasRect = canvas.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  return {
+    viewport: [innerWidth, innerHeight],
+    canvas: [canvasRect.left, canvasRect.top, canvasRect.width, canvasRect.height],
+    panel: [panelRect.left, panelRect.top, panelRect.width, panelRect.height],
+    panelPosition: getComputedStyle(panel).position,
+  };
+})()`);
+assert(Math.abs(overlayLayout.canvas[0]) < 1 && Math.abs(overlayLayout.canvas[1]) < 1, 'canvas did not start at the window origin');
+assert(Math.abs(overlayLayout.canvas[2] - overlayLayout.viewport[0]) < 1, 'canvas did not fit the window width');
+assert(Math.abs(overlayLayout.canvas[3] - overlayLayout.viewport[1]) < 1, 'canvas did not fit the window height');
+assert.equal(overlayLayout.panelPosition, 'absolute', 'telemetry panel was not an overlay');
+assert(overlayLayout.panel[0] > 0 && overlayLayout.panel[0] + overlayLayout.panel[2] <= overlayLayout.viewport[0], 'telemetry overlay escaped the viewport');
+await command('Emulation.setDeviceMetricsOverride', { width: 1024, height: 640, deviceScaleFactor: 1, mobile: false }, sessionId);
+await sleep(50);
+const resizedCanvas = await evaluate(`(() => {
+  const rect = document.querySelector('#track').getBoundingClientRect();
+  return [innerWidth, innerHeight, rect.left, rect.top, rect.width, rect.height];
+})()`);
+assert.deepEqual(resizedCanvas, [1024, 640, 0, 0, 1024, 640], 'canvas did not follow a live window resize');
+await command('Emulation.clearDeviceMetricsOverride', {}, sessionId);
 assert.equal(await evaluate('window.__MY_PHYSICS_RACE__.phase'), 'countdown');
 assert.equal(await evaluate('window.__MY_PHYSICS_RACE__.standings.length'), 10);
 for (let retry = 0; retry < 30; retry += 1) {
@@ -74,7 +99,7 @@ assert(Number.isFinite(result.frame.playerPosition[1]) && Math.abs(result.frame.
 assert(result.frame.drawCalls <= 3, `unexpected draw-call count ${result.frame.drawCalls}`);
 assert(result.benchmark.realtime > 1, 'ten-vehicle browser physics missed real time');
 assert.equal(exceptions.length, 0, `browser exceptions: ${exceptions.join('; ')}`);
-console.log(JSON.stringify({ browser: version.Browser, result, exceptions }, null, 2));
+console.log(JSON.stringify({ browser: version.Browser, overlayLayout, result, exceptions }, null, 2));
 if (process.env.RACE_SCREENSHOT) {
   const screenshot = await command('Page.captureScreenshot', { format: 'png', fromSurface: true }, sessionId);
   await writeFile(process.env.RACE_SCREENSHOT, Buffer.from(screenshot.data, 'base64'));
