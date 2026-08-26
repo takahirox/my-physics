@@ -47,6 +47,14 @@ fn high_priority_vehicle_runs_at_one_kilohertz() {
 }
 
 #[test]
+fn race_ai_has_no_vehicle_definition_advantage() {
+    let world = PhysicsWorld::demo(10);
+    let player_definition = &world.vehicles[0].definition;
+    assert!(world.vehicles[1..].iter().all(|vehicle| vehicle.definition == *player_definition));
+    assert!(world.vehicles.iter().all(|vehicle| vehicle.state.damage.body == 0.0));
+}
+
+#[test]
 fn throttle_accelerates_reference_vehicle_forward() {
     let mut w = PhysicsWorld::demo(1);
     let forward = w.vehicles[0].state.orientation.rotate(my_physics::Vec3::FORWARD);

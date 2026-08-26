@@ -16,6 +16,7 @@
     <section class="layout">
       <div class="viewport">
         <canvas id="track"></canvas>
+        <div class="speed-streaks" aria-hidden="true"></div>
         <section id="raceHud" class="race-hud" aria-label="Race status">
           <div class="race-hud__position">
             <span>POSITION</span>
@@ -42,7 +43,7 @@
           <ol id="raceResultsList" class="race-results__list"></ol>
           <button id="raceRestart" type="button">RACE AGAIN <span>R / ENTER / START</span></button>
         </section>
-        <div class="legend">3D · WASD / arrows · C: camera · I: Sport / Simulation · P: AI driver · E: ESC override · Shift: clutch · Space: handbrake · T: auto · 1–6: gear · K/L: save/restore</div>
+        <div class="legend">3D · WASD / arrows · C: camera · M: audio · I: Sport / Simulation · P: AI driver · E: ESC override · Shift: clutch · Space: handbrake · T: auto · 1–6: gear · K/L: save/restore</div>
       </div>
       <aside>
         <div class="metric hero"><label>SPEED</label><strong id="speed">0.0</strong><span>km/h</span></div>
@@ -62,7 +63,8 @@
         <div class="device setup"><label>DEVICE SETUP</label><span><button id="calibrateRest">REST / CENTER</button><button id="resetCalibration">RESET</button></span></div>
         <div class="device"><label>CALIBRATION</label><span id="calibrationStatus">DEFAULT RANGE</span></div>
         <div class="device"><label>QUALITY</label><select id="quality"><option value="auto">AUTO (BENCHMARK)</option><option value="2">HIGH</option><option value="1">MEDIUM</option><option value="0">LOW</option></select></div>
-        <div class="device"><label>CAMERA</label><select id="cameraPreset"><option value="chase">CHASE · C</option><option value="hood">HOOD · C</option></select></div>
+        <div class="device"><label>CAMERA</label><select id="cameraPreset"><option value="chase">CHASE · C</option><option value="hood">HOOD · C</option><option value="cockpit">COCKPIT · C</option></select></div>
+        <div class="device setup"><label>TELEMETRY AUDIO</label><span><button id="audioToggle">ENABLE · M</button></span></div>
         <div class="snapshot"><button id="saveSnapshot">SAVE SNAPSHOT · K</button><button id="restoreSnapshot">RESTORE · L</button><span id="snapshotStatus">NOT SAVED</span></div>
         <section id="labPanel" class="lab-panel" hidden>
           <h2>Reproducible maneuvers</h2>

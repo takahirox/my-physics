@@ -11,6 +11,7 @@ static DEMO: OnceLock<Mutex<PhysicsWorld>> = OnceLock::new();
 static SAVED_SNAPSHOT: OnceLock<Mutex<Option<SavedBrowserState>>> = OnceLock::new();
 static VALIDATION_REPORT: OnceLock<Mutex<Option<crate::validation::ScenarioReport>>> = OnceLock::new();
 static PLAYER_AUTOPILOT: AtomicBool = AtomicBool::new(false);
+static RACE_RUNNING: AtomicBool = AtomicBool::new(true);
 static PLAYER_INPUT_MODE: AtomicU8 = AtomicU8::new(0);
 static KEYBOARD_ASSIST_ENABLED: AtomicBool = AtomicBool::new(true);
 static EXPERIENCE_PROFILE: AtomicU8 = AtomicU8::new(1);
@@ -52,6 +53,7 @@ struct SavedBrowserState {
     keyboard_assist_enabled: bool,
     experience_profile: u8,
     demo_vehicle_preset: u8,
+    race_running: bool,
 }
 
 fn keyboard() -> &'static Mutex<KeyboardInputState> {
@@ -102,6 +104,7 @@ fn profile_lateral_accel_target(profile: u8) -> Option<f64> {
 pub extern "C" fn physics_reset() {
     with_world(|w| *w = selected_demo());
     PLAYER_AUTOPILOT.store(false, Ordering::Relaxed);
+    RACE_RUNNING.store(true, Ordering::Relaxed);
     PLAYER_INPUT_MODE.store(0, Ordering::Relaxed);
     KEYBOARD_ASSIST_ENABLED.store(true, Ordering::Relaxed);
     EXPERIENCE_PROFILE.store(PROFILE_SPORT, Ordering::Relaxed);
@@ -123,6 +126,19 @@ pub extern "C" fn physics_select_demo_vehicle_preset(preset: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn physics_demo_vehicle_preset() -> u32 {
     u32::from(DEMO_VEHICLE_PRESET.load(Ordering::Relaxed))
+}
+
+/// Application-layer starting-light gate. While disabled every vehicle receives
+/// a normal full service-brake command; rigid bodies, gravity and the fixed
+/// physics clock continue to advance without teleporting or freezing state.
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_set_race_running(running: u32) {
+    RACE_RUNNING.store(running != 0, Ordering::Relaxed);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_race_running() -> u32 {
+    u32::from(RACE_RUNNING.load(Ordering::Relaxed))
 }
 
 /// Restores the collision-free engineering proving ground for free drive.
@@ -268,17 +284,44 @@ pub extern "C" fn physics_step(steps: u32) {
                 keyboard.pipeline.applied_step = w.step_index;
                 let _ = w.set_input_unrecorded(0, policy);
             }
+            if !RACE_RUNNING.load(Ordering::Relaxed) {
+                let staged = DriverInput { brake: 1.0, handbrake: 1.0, ..DriverInput::default() };
+                for vehicle in 0..w.vehicles.len() {
+                    let _ = w.set_input_unrecorded(vehicle, staged);
+                }
+                let _ = w.step_fixed(1);
+                continue;
+            }
             let ai_start = if PLAYER_AUTOPILOT.load(Ordering::Relaxed) { 0 } else { 1 };
             for n in ai_start..w.vehicles.len() {
-                let vehicle = &w.vehicles[n];
-                let lane = if n % 2 == 0 { -0.35 } else { 0.35 };
-                let input = crate::circuit::ai_driver_input_with_yaw(
-                    vehicle.state.position_m,
-                    vehicle.state.orientation,
-                    vehicle.telemetry.speed_mps,
-                    vehicle.telemetry.yaw_rate_rad_s,
-                    lane,
-                );
+                let input = {
+                    let vehicle = &w.vehicles[n];
+                    let forward = vehicle.state.orientation.rotate(crate::Vec3::FORWARD);
+                    let right = vehicle.state.orientation.rotate(crate::Vec3::X);
+                    let base_lane = ((n * 37 % 5) as f64 - 2.0) * 0.7;
+                    let blocked_ahead = w.vehicles.iter().enumerate().any(|(other, competitor)| {
+                        if other == n {
+                            return false;
+                        }
+                        let relative = competitor.state.position_m - vehicle.state.position_m;
+                        let ahead_m = relative.dot(forward);
+                        let closing_speed_mps =
+                            (vehicle.state.linear_velocity_mps - competitor.state.linear_velocity_mps).dot(forward);
+                        (1.0..18.0).contains(&ahead_m) && relative.dot(right).abs() < 1.8 && closing_speed_mps > 2.0
+                    });
+                    // Passing is an ordinary lane target in the AI controller.
+                    // All competitors retain identical plant parameters,
+                    // collision response, available grip and power.
+                    let pass_lane = if blocked_ahead { if n % 2 == 0 { -0.5 } else { 0.5 } } else { 0.0 };
+                    let lane = (base_lane + pass_lane).clamp(-2.2, 2.2);
+                    crate::circuit::ai_driver_input_with_yaw(
+                        vehicle.state.position_m,
+                        vehicle.state.orientation,
+                        vehicle.telemetry.speed_mps,
+                        vehicle.telemetry.yaw_rate_rad_s,
+                        lane,
+                    )
+                };
                 let _ = w.set_input_unrecorded(n, input);
             }
             let _ = w.step_fixed(1);
@@ -607,6 +650,10 @@ pub extern "C" fn physics_lateral_acceleration(i: u32) -> f64 {
     read_vehicle(i, |v| v.state.orientation.conjugate().rotate(v.telemetry.acceleration_mps2).x)
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn physics_longitudinal_acceleration(i: u32) -> f64 {
+    read_vehicle(i, |v| -v.state.orientation.conjugate().rotate(v.telemetry.acceleration_mps2).z)
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn physics_body_slip_angle(i: u32) -> f64 {
     read_vehicle(i, |v| {
         let local = v.state.orientation.conjugate().rotate(v.state.linear_velocity_mps);
@@ -768,6 +815,46 @@ pub extern "C" fn physics_audio_tire_scrub(i: u32) -> f64 {
     read_vehicle(i, |v| v.audio.tire_scrub.into_iter().fold(0.0, f64::max))
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn physics_audio_tire_scrub_wheel(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.audio.tire_scrub.get(wheel as usize).copied().unwrap_or(f64::NAN))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_audio_road_noise(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.audio.road_noise.get(wheel as usize).copied().unwrap_or(f64::NAN))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_audio_suspension_activity(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.audio.suspension_activity.get(wheel as usize).copied().unwrap_or(f64::NAN))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_audio_intake(i: u32) -> f64 {
+    read_vehicle(i, |v| v.audio.intake)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_audio_exhaust(i: u32) -> f64 {
+    read_vehicle(i, |v| v.audio.exhaust)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_audio_wind(i: u32) -> f64 {
+    read_vehicle(i, |v| v.audio.wind)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_audio_impact(i: u32) -> f64 {
+    read_vehicle(i, |v| v.audio.impact)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_brake_temperature(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.telemetry.brake_temperature_k.get(wheel as usize).copied().unwrap_or(f64::NAN))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_hydroplaning(i: u32, wheel: u32) -> f64 {
+    read_vehicle(i, |v| v.telemetry.hydroplaning.get(wheel as usize).copied().unwrap_or(f64::NAN))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn physics_engine_redline(i: u32) -> f64 {
+    read_vehicle(i, |v| v.definition.engine.redline_rpm)
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn physics_snapshot_save() -> u32 {
     // Keep the lock order world -> keyboard everywhere that needs both. Raw
     // input drops the keyboard lock before taking world, so restore cannot
@@ -780,6 +867,7 @@ pub extern "C" fn physics_snapshot_save() -> u32 {
         keyboard_assist_enabled: KEYBOARD_ASSIST_ENABLED.load(Ordering::Relaxed),
         experience_profile: EXPERIENCE_PROFILE.load(Ordering::Relaxed),
         demo_vehicle_preset: DEMO_VEHICLE_PRESET.load(Ordering::Relaxed),
+        race_running: RACE_RUNNING.load(Ordering::Relaxed),
     });
     let size = state.world.to_bytes().len();
     let mut saved = saved_snapshot().lock().unwrap_or_else(|error| error.into_inner());
@@ -800,6 +888,7 @@ pub extern "C" fn physics_snapshot_restore() -> u32 {
         KEYBOARD_ASSIST_ENABLED.store(state.keyboard_assist_enabled, Ordering::Relaxed);
         EXPERIENCE_PROFILE.store(state.experience_profile, Ordering::Relaxed);
         DEMO_VEHICLE_PRESET.store(state.demo_vehicle_preset, Ordering::Relaxed);
+        RACE_RUNNING.store(state.race_running, Ordering::Relaxed);
     });
     1
 }

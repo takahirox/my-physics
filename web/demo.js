@@ -1,6 +1,7 @@
 import {
   CAMERA_PRESET_ORDER,
   VISUAL_CUES,
+  cameraTelemetryResponse,
   cameraSettings,
   metricIntervals,
   metricSamples,
@@ -18,6 +19,9 @@ import {
   normalizePedalAxis,
   sharedInputConfigForPersistence,
 } from './input-config.mjs';
+import { RaceDirector, RACE_PHASE, formatRaceTime } from './race-state.mjs';
+import { TelemetryAudioEngine } from './audio-engine.mjs';
+import { EFFECT_LIMITS, effectEmissionRates } from './presentation-config.mjs';
 
 const status = document.querySelector('#status');
 const canvas = document.querySelector('#track');
@@ -54,9 +58,80 @@ let api;
 let previous = performance.now();
 let accumulator = 0;
 let gear = 0;
-let completedLaps = 0;
-let previousProgress;
 let cameraPreset = 'chase';
+const raceDirector = SIMULATION_LAB ? null : new RaceDirector({ totalLaps: 3 });
+let raceView = null;
+let savedRaceState = null;
+const audioEngine = new TelemetryAudioEngine();
+let audioMuted = false;
+let audioEnabled = false;
+let previousGamepadStart = false;
+let greenUntilPhysicsTime = 0;
+const raceUi = Object.fromEntries(
+  ['raceHud', 'racePosition', 'raceField', 'raceLap', 'raceTime', 'raceBestLap', 'raceCountdown', 'raceCountdownLabel', 'raceResults', 'raceResultSummary', 'raceResultsList', 'raceRestart'].map(
+    (id) => [id, document.querySelector(`#${id}`)],
+  ),
+);
+
+function vehicleProgresses() {
+  return Array.from({ length: api.physics_vehicle_count() }, (_, index) => api.physics_track_progress(index));
+}
+
+function resetRace() {
+  api.physics_reset();
+  api.physics_set_experience_profile(PROFILE_INDEX[inputConfig.driveProfile] ?? 1);
+  gear = 0;
+  accumulator = 0;
+  savedRaceState = null;
+  if (raceDirector) {
+    raceView = raceDirector.reset(api.physics_time(), vehicleProgresses());
+    greenUntilPhysicsTime = 0;
+    api.physics_set_race_running?.(0);
+  }
+  if (renderer) {
+    renderer.eye = null;
+    renderer.resetEffects();
+  }
+}
+
+function updateAudioButton() {
+  const button = document.querySelector('#audioToggle');
+  if (button) button.textContent = !audioEnabled ? 'ENABLE · M' : audioMuted ? 'MUTED · M' : 'ON · M';
+}
+
+async function enableAudio() {
+  if (audioEnabled) return true;
+  if (await audioEngine.unlock()) {
+    audioEnabled = true;
+    audioMuted = false;
+    audioEngine.setMuted(false);
+    updateAudioButton();
+    return true;
+  }
+  return false;
+}
+
+async function toggleAudio() {
+  if (!audioEnabled) return enableAudio();
+  audioMuted = !audioMuted;
+  audioEngine.setMuted(audioMuted);
+  updateAudioButton();
+}
+
+function updateRaceState() {
+  if (!raceDirector) return;
+  const next = raceDirector.update(api.physics_time(), vehicleProgresses());
+  if (next.events.some(({ type }) => type === 'race-started')) {
+    api.physics_set_race_running?.(1);
+    greenUntilPhysicsTime = api.physics_time() + 0.8;
+  }
+  raceView = next;
+  window.__MY_PHYSICS_RACE__ = {
+    ...raceView,
+    physicsStep: api.physics_step_index(),
+    restart: resetRace,
+  };
+}
 const storedInputConfig = (() => {
   try {
     return localStorage.getItem(INPUT_CONFIG_STORAGE_KEY) || '';
@@ -115,14 +190,11 @@ function selectCameraPreset(name) {
 
 addEventListener('keydown', (event) => {
   keys.add(event.code);
+  if (event.code === 'KeyM' && !event.repeat) toggleAudio();
+  else enableAudio();
   if (/^Digit[1-6]$/.test(event.code)) gear = Number(event.code.at(-1));
   if (event.code === 'KeyT') gear = 0;
-  if (event.code === 'KeyR') {
-    api?.physics_reset();
-    if (api) api.physics_set_experience_profile(PROFILE_INDEX[inputConfig.driveProfile] ?? 1);
-    completedLaps = 0;
-    previousProgress = undefined;
-  }
+  if ((event.code === 'KeyR' || event.code === 'Enter') && api && !event.repeat) resetRace();
   if (event.code === 'KeyP' && api && !event.repeat) {
     api.physics_set_player_autopilot(api.physics_player_autopilot() ? 0 : 1);
   }
@@ -138,10 +210,13 @@ addEventListener('keydown', (event) => {
   }
   if (event.code === 'KeyK' && api) {
     const bytes = api.physics_snapshot_save();
+    savedRaceState = raceDirector?.snapshot() ?? null;
     ui.snapshotStatus.textContent = `SAVED · ${(bytes / 1024).toFixed(0)} KiB`;
   }
   if (event.code === 'KeyL' && api) {
-    ui.snapshotStatus.textContent = api.physics_snapshot_restore() ? 'RESTORED' : 'NO SNAPSHOT';
+    const restored = api.physics_snapshot_restore();
+    if (restored && raceDirector && savedRaceState) raceView = raceDirector.restore(savedRaceState);
+    ui.snapshotStatus.textContent = restored ? 'RESTORED' : 'NO SNAPSHOT';
   }
 });
 addEventListener('keyup', (event) => keys.delete(event.code));
@@ -378,9 +453,9 @@ function dot(a, b) {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function lookAt(eye, center) {
+function lookAt(eye, center, worldUp = [0, 1, 0]) {
   const z = normalize(eye.map((value, index) => value - center[index]));
-  const x = normalize(cross([0, 1, 0], z));
+  const x = normalize(cross(worldUp, z));
   const y = cross(z, x);
   return new Float32Array([
     x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1,
@@ -398,15 +473,50 @@ function multiply(a, b) {
   return result;
 }
 
-function modelMatrix(position, scale, yaw = 0) {
+function frameFromYaw(yaw = 0) {
   const cosine = Math.cos(yaw);
   const sine = Math.sin(yaw);
+  return { right: [cosine, 0, -sine], up: [0, 1, 0], forward: [-sine, 0, -cosine] };
+}
+
+function rotateByQuaternion(vector, quaternion) {
+  const [x, y, z] = vector;
+  const { w, x: qx, y: qy, z: qz } = quaternion;
+  const tx = 2 * (qy * z - qz * y);
+  const ty = 2 * (qz * x - qx * z);
+  const tz = 2 * (qx * y - qy * x);
+  return [x + w * tx + (qy * tz - qz * ty), y + w * ty + (qz * tx - qx * tz), z + w * tz + (qx * ty - qy * tx)];
+}
+
+function frameFromQuaternion(quaternion) {
+  return {
+    right: normalize(rotateByQuaternion([1, 0, 0], quaternion)),
+    up: normalize(rotateByQuaternion([0, 1, 0], quaternion)),
+    forward: normalize(rotateByQuaternion([0, 0, -1], quaternion)),
+  };
+}
+
+function asFrame(frame) {
+  return typeof frame === 'number' ? frameFromYaw(frame) : frame;
+}
+
+function modelMatrix(position, scale, frame = 0) {
+  const { right, up, forward } = asFrame(frame);
   return new Float32Array([
-    cosine * scale[0], 0, -sine * scale[0], 0,
-    0, scale[1], 0, 0,
-    sine * scale[2], 0, cosine * scale[2], 0,
+    right[0] * scale[0], right[1] * scale[0], right[2] * scale[0], 0,
+    up[0] * scale[1], up[1] * scale[1], up[2] * scale[1], 0,
+    -forward[0] * scale[2], -forward[1] * scale[2], -forward[2] * scale[2], 0,
     position[0], position[1], position[2], 1,
   ]);
+}
+
+function localPoint(position, frame, local) {
+  const { right, up, forward } = asFrame(frame);
+  return [
+    position[0] + right[0] * local[0] + up[0] * local[1] - forward[0] * local[2],
+    position[1] + right[1] * local[0] + up[1] * local[1] - forward[1] * local[2],
+    position[2] + right[2] * local[0] + up[2] * local[1] - forward[2] * local[2],
+  ];
 }
 
 function rgb(hex, alpha = 1) {
@@ -457,6 +567,8 @@ class Renderer3D {
     this.eye = null;
     this.drawCalls = 0;
     this.instances = null;
+    this.effects = [];
+    this.effectCarry = { smoke: 0, spray: 0, sparks: 0 };
   }
 
   resize() {
@@ -472,13 +584,13 @@ class Renderer3D {
     return width / Math.max(height, 1);
   }
 
-  box(position, scale, color, yaw = 0) {
+  box(position, scale, color, frame = 0) {
     if (this.instances) {
-      this.instances.push(...modelMatrix(position, scale, yaw), ...color);
+      this.instances.push(...modelMatrix(position, scale, frame), ...color);
       return;
     }
     const gl = this.gl;
-    gl.uniformMatrix4fv(this.model, false, modelMatrix(position, scale, yaw));
+    gl.uniformMatrix4fv(this.model, false, modelMatrix(position, scale, frame));
     gl.uniform4fv(this.color, color);
     gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
     this.drawCalls += 1;
@@ -506,38 +618,141 @@ class Renderer3D {
     this.instances = null;
   }
 
-  localPoint(position, yaw, local) {
-    const cosine = Math.cos(yaw);
-    const sine = Math.sin(yaw);
-    return [position[0] + cosine * local[0] + sine * local[2], position[1] + local[1], position[2] - sine * local[0] + cosine * local[2]];
+  localPoint(position, frame, local) {
+    return localPoint(position, frame, local);
   }
 
-  car(position, yaw, color, player) {
-    this.box([position[0], 0.025, position[2]], [2.05, 0.025, 4.65], rgb('#020503', 0.38), yaw);
-    this.box(this.localPoint(position, yaw, [0, 0, 0.12]), [1.82, 0.48, 4.22], color, yaw);
-    this.box(this.localPoint(position, yaw, [0, 0.45, 0.35]), [1.48, 0.54, 1.82], rgb(player ? '#26361d' : '#17201c'), yaw);
-    this.box(this.localPoint(position, yaw, [0, 0.75, 0.31]), [1.34, 0.12, 1.25], rgb('#80a39c'), yaw);
+  car(position, frame, color, player, steering = 0) {
+    this.box(this.localPoint(position, frame, [0, -0.53, 0.12]), [2.05, 0.025, 4.65], rgb('#020503', 0.38), frame);
+    this.box(this.localPoint(position, frame, [0, 0, 0.12]), [1.82, 0.48, 4.22], color, frame);
+    this.box(this.localPoint(position, frame, [0, 0.45, 0.35]), [1.48, 0.54, 1.82], rgb(player ? '#26361d' : '#17201c'), frame);
+    this.box(this.localPoint(position, frame, [0, 0.75, 0.31]), [1.34, 0.12, 1.25], rgb('#80a39c'), frame);
     for (const x of [-0.94, 0.94]) {
-      for (const z of [-1.35, 1.35]) this.box(this.localPoint(position, yaw, [x, -0.05, z]), [0.25, 0.62, 0.72], rgb('#070907'), yaw);
+      for (const z of [-1.35, 1.35]) {
+        const wheelFrame = z >= 0 ? frame : {
+          ...frame,
+          right: normalize(frame.right.map((value, axis) => value * Math.cos(steering) - frame.forward[axis] * Math.sin(steering))),
+          forward: normalize(frame.forward.map((value, axis) => value * Math.cos(steering) + frame.right[axis] * Math.sin(steering))),
+        };
+        this.box(this.localPoint(position, frame, [x, -0.05, z]), [0.25, 0.62, 0.72], rgb('#070907'), wheelFrame);
+      }
     }
     for (const x of [-0.57, 0.57]) {
-      this.box(this.localPoint(position, yaw, [x, 0.02, -2.14]), [0.36, 0.16, 0.05], rgb('#e8f7d1'), yaw);
-      this.box(this.localPoint(position, yaw, [x, 0.02, 2.14]), [0.38, 0.16, 0.05], rgb('#ff3e28'), yaw);
+      this.box(this.localPoint(position, frame, [x, 0.02, -2.14]), [0.36, 0.16, 0.05], rgb('#e8f7d1'), frame);
+      this.box(this.localPoint(position, frame, [x, 0.02, 2.14]), [0.38, 0.16, 0.05], rgb('#ff3e28'), frame);
     }
   }
 
-  grandstand(position, yaw, trackHalfWidth, side) {
+  resetEffects() {
+    this.effects = [];
+    this.effectCarry = { smoke: 0, spray: 0, sparks: 0 };
+  }
+
+  emitEffect(type, position, velocity, lifeS, size, color, cap) {
+    const sameType = this.effects.reduce((count, effect) => count + Number(effect.type === type), 0);
+    if (sameType >= cap) return;
+    this.effects.push({ type, position: [...position], velocity: [...velocity], lifeS, ageS: 0, size, color });
+  }
+
+  updateEffects(elapsed, position, frame, telemetry, physicsStep) {
+    for (const effect of this.effects) {
+      effect.ageS += elapsed;
+      for (let axis = 0; axis < 3; axis += 1) effect.position[axis] += effect.velocity[axis] * elapsed;
+      if (effect.type !== 'spark') effect.velocity[1] += 0.35 * elapsed;
+      else effect.velocity[1] -= 6.5 * elapsed;
+    }
+    this.effects = this.effects.filter((effect) => effect.ageS < effect.lifeS);
+    const rates = effectEmissionRates(telemetry);
+    const smokeRate = rates.smokePerSecond.reduce((sum, value) => sum + value, 0);
+    const sprayRate = rates.sprayPerSecond.reduce((sum, value) => sum + value, 0);
+    const emit = (type, rate, cap, factory) => {
+      this.effectCarry[type] += rate * elapsed;
+      const count = Math.min(10, Math.floor(this.effectCarry[type]));
+      this.effectCarry[type] -= count;
+      for (let index = 0; index < count; index += 1) factory(index, cap);
+    };
+    const phase = (physicsStep % 997) * 0.173;
+    emit('smoke', smokeRate, EFFECT_LIMITS.smokeParticles, (index, cap) => {
+      const side = (index + physicsStep) % 2 ? -0.92 : 0.92;
+      const origin = this.localPoint(position, frame, [side, -0.28, 1.45]);
+      this.emitEffect('smoke', origin, [Math.sin(phase + index) * 0.5, 1.0, Math.cos(phase + index) * 0.5], 1.2, 0.25, rgb('#d9ddd5', 0.46), cap);
+    });
+    emit('spray', sprayRate, EFFECT_LIMITS.sprayParticles, (index, cap) => {
+      const side = (index + physicsStep) % 2 ? -0.92 : 0.92;
+      const origin = this.localPoint(position, frame, [side, -0.3, 1.5]);
+      const backwards = frame.forward.map((value) => -value * 5.5);
+      this.emitEffect('spray', origin, [backwards[0] + Math.sin(phase + index), 2.4, backwards[2] + Math.cos(phase + index)], 0.65, 0.11, rgb('#a7e8ff', 0.65), cap);
+    });
+    emit('sparks', rates.sparksPerSecond, EFFECT_LIMITS.sparkParticles, (index, cap) => {
+      const origin = this.localPoint(position, frame, [0, -0.35, 1.8]);
+      this.emitEffect('spark', origin, [Math.sin(phase + index) * 4, 3 + index * 0.1, Math.cos(phase + index) * 4], 0.42, 0.08, rgb('#ffcf42'), cap);
+    });
+    for (const effect of this.effects) {
+      const fade = Math.max(0, 1 - effect.ageS / effect.lifeS);
+      this.box(effect.position, [effect.size * (1 + effect.ageS), effect.size * (1 + effect.ageS), effect.size * (1 + effect.ageS)], [effect.color[0], effect.color[1], effect.color[2], effect.color[3] * fade]);
+    }
+    return rates;
+  }
+
+  grandstand(position, frame, trackHalfWidth, side) {
     const baseX = side * (trackHalfWidth + 4.3);
     for (let row = 0; row < 5; row += 1) {
       const x = baseX + side * row * 0.9;
-      this.box(this.localPoint(position, yaw, [x, 0.4 + row * 0.48, 0]), [1.0, 0.75, 30], rgb(row % 2 ? '#303a36' : '#46534d'), yaw);
+      this.box(this.localPoint(position, frame, [x, 0.4 + row * 0.48, 0]), [1.0, 0.75, 30], rgb(row % 2 ? '#303a36' : '#46534d'), frame);
       for (let seat = -13; seat <= 13; seat += 2) {
         const seatColor = Math.abs(seat + row) % 4 ? '#c5d0c8' : '#b9ef42';
-        this.box(this.localPoint(position, yaw, [x - side * 0.5, 0.88 + row * 0.48, seat]), [0.18, 0.16, 1.1], rgb(seatColor), yaw);
+        this.box(this.localPoint(position, frame, [x - side * 0.5, 0.88 + row * 0.48, seat]), [0.18, 0.16, 1.1], rgb(seatColor), frame);
       }
     }
-    this.box(this.localPoint(position, yaw, [baseX + side * 2.1, 3.4, 0]), [5.7, 0.22, 32], rgb('#c4cbc4'), yaw);
-    this.box(this.localPoint(position, yaw, [baseX + side * 4.8, 1.7, 0]), [0.18, 3.4, 32], rgb('#6f7974'), yaw);
+    this.box(this.localPoint(position, frame, [baseX + side * 2.1, 3.4, 0]), [5.7, 0.22, 32], rgb('#c4cbc4'), frame);
+    this.box(this.localPoint(position, frame, [baseX + side * 4.8, 1.7, 0]), [0.18, 3.4, 32], rgb('#6f7974'), frame);
+  }
+
+  landmarks(playerPosition, trackHalfWidth) {
+    const visible = (segment) => Math.hypot(
+      segment.position[0] - playerPosition[0],
+      segment.position[1] - playerPosition[1],
+      segment.position[2] - playerPosition[2],
+    ) < 250;
+    const tower = this.circuit[48];
+    if (visible(tower)) {
+      const base = this.localPoint(tower.position, tower.frame, [trackHalfWidth + 18, 0, 0]);
+      for (let level = 0; level < 7; level += 1) {
+        this.box(this.localPoint(base, tower.frame, [0, 1.6 + level * 3.0, 0]), [4.8 - level * 0.34, 2.7, 4.8 - level * 0.34], rgb(level % 2 ? '#ff7357' : '#ffe75a'), tower.frame);
+      }
+      this.box(this.localPoint(base, tower.frame, [0, 23.0, 0]), [1.0, 4.0, 1.0], rgb('#f7f0d4'), tower.frame);
+    }
+    const bridge = this.circuit[118];
+    if (visible(bridge)) {
+      for (const side of [-1, 1]) this.box(this.localPoint(bridge.position, bridge.frame, [side * (trackHalfWidth + 1.0), 3.4, -4]), [0.7, 6.8, 0.8], rgb('#224d73'), bridge.frame);
+      this.box(this.localPoint(bridge.position, bridge.frame, [0, 6.5, -4]), [trackHalfWidth * 2 + 4, 0.75, 1.2], rgb('#48c7e8'), bridge.frame);
+      this.box(this.localPoint(bridge.position, bridge.frame, [0, 7.15, -4]), [6.0, 0.18, 0.22], rgb('#fff15c'), bridge.frame);
+    }
+    for (const anchorIndex of [76, 82, 88, 174, 180, 186]) {
+      const anchor = this.circuit[anchorIndex];
+      if (!visible(anchor)) continue;
+      for (const side of [-1, 1]) {
+        for (let tree = 0; tree < 4; tree += 1) {
+          const trunk = this.localPoint(anchor.position, anchor.frame, [side * (trackHalfWidth + 8 + tree * 3.1), 1.3, tree * 4 - 7]);
+          this.box(trunk, [0.55, 2.6, 0.55], rgb('#694331'), anchor.frame);
+          this.box(this.localPoint(trunk, anchor.frame, [0, 2.2, 0]), [3.2, 2.8, 3.2], rgb(tree % 2 ? '#46a84e' : '#66cc4d'), anchor.frame);
+          this.box(this.localPoint(trunk, anchor.frame, [0, 4.0, 0]), [2.1, 1.9, 2.1], rgb('#92dd55'), anchor.frame);
+        }
+      }
+    }
+    const canyon = this.circuit[210];
+    if (visible(canyon)) {
+      for (const side of [-1, 1]) {
+        for (let rock = 0; rock < 5; rock += 1) {
+          this.box(
+            this.localPoint(canyon.position, canyon.frame, [side * (trackHalfWidth + 10 + rock * 2.7), 2 + rock * 0.8, rock * 5 - 10]),
+            [4.2 - rock * 0.25, 4 + rock * 1.6, 5.0],
+            rgb(rock % 2 ? '#b75842' : '#dd7b4f'),
+            canyon.frame,
+          );
+        }
+      }
+    }
   }
 
   raceCourse(physics, playerPosition, trackHalfWidth) {
@@ -546,8 +761,13 @@ class Renderer3D {
       this.circuit = Array.from({ length: physics.physics_track_segment_count() }, (_, index) => {
         const length = physics.physics_track_segment_length(index);
         const segment = {
-          position: [physics.physics_track_segment_x(index), 0, physics.physics_track_segment_z(index)],
+          position: [physics.physics_track_segment_x(index), physics.physics_track_segment_y(index), physics.physics_track_segment_z(index)],
           yaw: physics.physics_track_segment_yaw(index),
+          frame: {
+            forward: [physics.physics_track_segment_forward_x(index), physics.physics_track_segment_forward_y(index), physics.physics_track_segment_forward_z(index)],
+            right: [physics.physics_track_segment_right_x(index), physics.physics_track_segment_right_y(index), physics.physics_track_segment_right_z(index)],
+            up: [physics.physics_track_segment_up_x(index), physics.physics_track_segment_up_y(index), physics.physics_track_segment_up_z(index)],
+          },
           length,
           distanceStartM: cumulativeDistanceM,
           curbBands: metricIntervals(cumulativeDistanceM, length, VISUAL_CUES.curbBandM),
@@ -560,96 +780,101 @@ class Renderer3D {
         cumulativeDistanceM += length;
         return segment;
       });
+      const elevations = this.circuit.map((segment) => segment.position[1]);
+      this.trackElevationRangeM = Math.max(...elevations) - Math.min(...elevations);
     }
     const roadWidth = trackHalfWidth * 2;
-    this.box([0, -0.22, 0], [760, 0.32, 760], rgb('#18351d'));
+    this.box([0, -10.2, 0], [760, 0.32, 760], rgb('#15391e'));
 
     for (let index = 0; index < this.circuit.length; index += 1) {
       const segment = this.circuit[index];
-      const midpoint = this.localPoint(segment.position, segment.yaw, [0, 0, -segment.length * 0.5]);
-      const distance = Math.hypot(midpoint[0] - playerPosition[0], midpoint[2] - playerPosition[2]);
+      const midpoint = this.localPoint(segment.position, segment.frame, [0, 0, -segment.length * 0.5]);
+      const distance = Math.hypot(midpoint[0] - playerPosition[0], midpoint[1] - playerPosition[1], midpoint[2] - playerPosition[2]);
       if (distance > 235) continue;
       const joinLength = segment.length + 0.65;
-      this.box([midpoint[0], -0.015, midpoint[2]], [roadWidth, 0.08, joinLength], rgb('#202522'), segment.yaw);
-      this.box(this.localPoint(midpoint, segment.yaw, [-trackHalfWidth + 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.yaw);
-      this.box(this.localPoint(midpoint, segment.yaw, [trackHalfWidth - 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.yaw);
+      this.box(this.localPoint(midpoint, segment.frame, [0, -0.11, 0]), [roadWidth + 24, 0.16, joinLength], rgb('#31632e'), segment.frame);
+      this.box(this.localPoint(midpoint, segment.frame, [0, -0.015, 0]), [roadWidth, 0.08, joinLength], rgb('#202522'), segment.frame);
+      this.box(this.localPoint(midpoint, segment.frame, [-trackHalfWidth + 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.frame);
+      this.box(this.localPoint(midpoint, segment.frame, [trackHalfWidth - 0.12, 0.05, 0]), [0.16, 0.025, joinLength], rgb('#f0f2ec'), segment.frame);
       for (const side of [-1, 1]) {
-        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.3), 0.34, 0]), [0.6, 0.68, joinLength], rgb('#bcc3be'), segment.yaw);
-        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.62), 0.24, 0]), [0.035, 0.26, joinLength], rgb('#59615d'), segment.yaw);
-        this.box(this.localPoint(midpoint, segment.yaw, [side * (trackHalfWidth + 0.72), 2.3, 0]), [0.055, 0.055, joinLength], rgb('#8c9691'), segment.yaw);
+        this.box(this.localPoint(midpoint, segment.frame, [side * (trackHalfWidth + 0.3), 0.34, 0]), [0.6, 0.68, joinLength], rgb('#bcc3be'), segment.frame);
+        this.box(this.localPoint(midpoint, segment.frame, [side * (trackHalfWidth + 0.62), 0.24, 0]), [0.035, 0.26, joinLength], rgb('#59615d'), segment.frame);
+        this.box(this.localPoint(midpoint, segment.frame, [side * (trackHalfWidth + 0.72), 2.3, 0]), [0.055, 0.055, joinLength], rgb('#8c9691'), segment.frame);
       }
       if (distance <= VISUAL_CUES.detailRadiusM) {
         for (const band of segment.curbBands) {
           const curbColor = band.band % 2 ? rgb('#d9342b') : rgb('#f4f2e9');
           for (const side of [-1, 1]) {
             this.box(
-              this.localPoint(segment.position, segment.yaw, [side * (trackHalfWidth - 0.3), 0.07, -band.centerM]),
+              this.localPoint(segment.position, segment.frame, [side * (trackHalfWidth - 0.3), 0.07, -band.centerM]),
               [0.6, 0.1, band.lengthM + VISUAL_CUES.curbJoinOverlapM],
               curbColor,
-              segment.yaw,
+              segment.frame,
             );
           }
         }
         for (const sample of segment.fencePosts) {
           for (const side of [-1, 1]) {
-            const point = this.localPoint(segment.position, segment.yaw, [side * (trackHalfWidth + 0.72), 0, -sample.localM]);
-            this.box([point[0], 1.45, point[2]], [0.09, 2.9, 0.09], rgb('#77817c'), segment.yaw);
+            const point = this.localPoint(segment.position, segment.frame, [side * (trackHalfWidth + 0.72), 1.45, -sample.localM]);
+            this.box(point, [0.09, 2.9, 0.09], rgb('#77817c'), segment.frame);
           }
         }
         for (const sample of segment.seams) {
           const seamLane = ((sample.index * 3) % 5 - 2) * 1.45;
           this.box(
-            this.localPoint(segment.position, segment.yaw, [seamLane, 0.033, -sample.localM]),
+            this.localPoint(segment.position, segment.frame, [seamLane, 0.033, -sample.localM]),
             [2.1 + (Math.abs(sample.index) % 3) * 0.45, 0.012, 0.04],
             rgb('#151a17', 0.58),
-            segment.yaw,
+            segment.frame,
           );
         }
         for (const sample of segment.patches) {
           const lane = ((sample.index % 4) - 1.5) * 1.35;
           this.box(
-            this.localPoint(segment.position, segment.yaw, [lane, 0.029, -sample.localM]),
+            this.localPoint(segment.position, segment.frame, [lane, 0.029, -sample.localM]),
             [1.05, 0.01, 1.35],
             rgb(sample.index % 3 ? '#252b27' : '#1b211e', 0.72),
-            segment.yaw,
+            segment.frame,
           );
         }
         for (const sample of segment.rubber) {
           for (const rubber of [-0.88, 0.88]) {
             this.box(
-              this.localPoint(segment.position, segment.yaw, [rubber, 0.036, -sample.localM]),
+              this.localPoint(segment.position, segment.frame, [rubber, 0.036, -sample.localM]),
               [0.09, 0.014, 2.1],
               rgb('#0e1210', 0.86),
-              segment.yaw,
+              segment.frame,
             );
           }
         }
       }
       for (const sample of segment.boards) {
-        const board = this.localPoint(segment.position, segment.yaw, [trackHalfWidth + 1.25, 0, -sample.localM]);
-        this.box([board[0], 1.0, board[2]], [0.1, 2.0, 0.1], rgb('#707873'), segment.yaw);
-        this.box([board[0], 2.05, board[2]], [1.05, 0.75, 0.16], rgb('#f0f1eb'), segment.yaw);
+        const board = this.localPoint(segment.position, segment.frame, [trackHalfWidth + 1.25, 1.0, -sample.localM]);
+        this.box(board, [0.1, 2.0, 0.1], rgb('#707873'), segment.frame);
+        this.box(this.localPoint(board, segment.frame, [0, 1.05, 0]), [1.05, 0.75, 0.16], rgb('#f0f1eb'), segment.frame);
       }
     }
+
+    this.landmarks(playerPosition, trackHalfWidth);
 
     const start = this.circuit[0];
     for (let row = 0; row < 2; row += 1) {
       for (let square = 0; square < 12; square += 1) {
         const local = [-trackHalfWidth + (square + 0.5) * (roadWidth / 12), 0.055, row * 0.55];
-        const point = this.localPoint(start.position, start.yaw, local);
-        this.box(point, [roadWidth / 12 + 0.01, 0.025, 0.56], rgb((square + row) % 2 ? '#171b18' : '#f4f5ee'), start.yaw);
+        const point = this.localPoint(start.position, start.frame, local);
+        this.box(point, [roadWidth / 12 + 0.01, 0.025, 0.56], rgb((square + row) % 2 ? '#171b18' : '#f4f5ee'), start.frame);
       }
     }
-    for (const side of [-1, 1]) this.box(this.localPoint(start.position, start.yaw, [side * (trackHalfWidth + 0.72), 3.1, 0]), [0.32, 6.2, 0.42], rgb('#87918c'), start.yaw);
-    this.box(this.localPoint(start.position, start.yaw, [0, 5.75, 0]), [roadWidth + 2.1, 0.55, 0.7], rgb('#171d19'), start.yaw);
-    this.box(this.localPoint(start.position, start.yaw, [0, 5.72, 0.37]), [5.2, 0.28, 0.05], rgb('#b9ef42'), start.yaw);
+    for (const side of [-1, 1]) this.box(this.localPoint(start.position, start.frame, [side * (trackHalfWidth + 0.72), 3.1, 0]), [0.32, 6.2, 0.42], rgb('#87918c'), start.frame);
+    this.box(this.localPoint(start.position, start.frame, [0, 5.75, 0]), [roadWidth + 2.1, 0.55, 0.7], rgb('#171d19'), start.frame);
+    this.box(this.localPoint(start.position, start.frame, [0, 5.72, 0.37]), [5.2, 0.28, 0.05], rgb('#b9ef42'), start.frame);
     for (let slot = 8; slot <= 44; slot += 8) {
       const lane = Math.floor(slot / 8) % 2 ? -1.65 : 1.65;
-      this.box(this.localPoint(start.position, start.yaw, [lane, 0.05, slot]), [2.25, 0.025, 0.09], rgb('#d8ddd7'), start.yaw);
+      this.box(this.localPoint(start.position, start.frame, [lane, 0.05, slot]), [2.25, 0.025, 0.09], rgb('#d8ddd7'), start.frame);
     }
-    const stands = this.localPoint(start.position, start.yaw, [0, 0, 24]);
-    this.grandstand(stands, start.yaw, trackHalfWidth, -1);
-    this.grandstand(stands, start.yaw, trackHalfWidth, 1);
+    const stands = this.localPoint(start.position, start.frame, [0, 0, 24]);
+    this.grandstand(stands, start.frame, trackHalfWidth, -1);
+    this.grandstand(stands, start.frame, trackHalfWidth, 1);
   }
 
   laboratoryGround(playerPosition) {
@@ -674,10 +899,26 @@ class Renderer3D {
     const y = physics.physics_render_y(0, alpha);
     const z = physics.physics_render_z(0, alpha);
     const yaw = physics.physics_render_yaw(0, alpha);
+    const playerQuaternion = {
+      w: physics.physics_render_orientation_w(0, alpha),
+      x: physics.physics_render_orientation_x(0, alpha),
+      y: physics.physics_render_orientation_y(0, alpha),
+      z: physics.physics_render_orientation_z(0, alpha),
+    };
+    const playerFrame = frameFromQuaternion(playerQuaternion);
     const speedMps = physics.physics_speed(0);
-    const forward = [-Math.sin(yaw), 0, -Math.cos(yaw)];
+    const { forward, right, up } = playerFrame;
+    const telemetry = readPresentationTelemetry(physics);
+    const cameraResponse = cameraTelemetryResponse(telemetry);
     const camera = cameraSettings(cameraPreset, speedMps);
-    const desiredEye = [x - forward[0] * camera.backM, y + camera.heightM, z - forward[2] * camera.backM];
+    const shakePhase = physics.physics_step_index() * 0.0618034;
+    const shake = cameraResponse.shakeEnvelopeM * Math.sin(shakePhase);
+    const desiredEye = [0, 1, 2].map((axis) => (
+      [x, y, z][axis]
+      - forward[axis] * (camera.backM - cameraResponse.longitudinalOffsetM)
+      + up[axis] * (camera.heightM + shake)
+      + right[axis] * (cameraResponse.lateralOffsetM + shake * 0.35)
+    ));
     if (!this.eye) this.eye = desiredEye;
     const cameraBlend = 1 - Math.exp(-elapsed * camera.responsePerS);
     this.eye = this.eye.map((value, index) => value + (desiredEye[index] - value) * cameraBlend);
@@ -687,14 +928,14 @@ class Renderer3D {
       this.eye = desiredEye.map((value, index) => value - (cameraError[index] / unclampedCameraLag) * camera.maxLagM);
     }
     const cameraLag = Math.hypot(...desiredEye.map((value, index) => value - this.eye[index]));
-    const target = [
-      x + forward[0] * camera.targetAheadM,
-      y + camera.targetHeightM,
-      z + forward[2] * camera.targetAheadM,
-    ];
-    const fieldOfViewDegrees = camera.fieldOfViewDegrees;
+    const pitchTarget = Math.tan(cameraResponse.pitchDeg * Math.PI / 180) * camera.targetAheadM;
+    const target = [0, 1, 2].map((axis) => (
+      [x, y, z][axis] + forward[axis] * camera.targetAheadM + up[axis] * (camera.targetHeightM + pitchTarget)
+    ));
+    const cameraUp = normalize([0, 1, 2].map((axis) => up[axis] - right[axis] * Math.tan(cameraResponse.rollDeg * Math.PI / 180)));
+    const fieldOfViewDegrees = camera.fieldOfViewDegrees + cameraResponse.edgeStreak * 3.0;
     const projection = perspective((fieldOfViewDegrees * Math.PI) / 180, aspect, 0.08, 700);
-    const view = lookAt(this.eye, target);
+    const view = lookAt(this.eye, target, cameraUp);
 
     window.__MY_PHYSICS_FRAME__ = {
       simulationTime: physics.physics_time(),
@@ -708,9 +949,11 @@ class Renderer3D {
       cameraLag,
       fieldOfViewDegrees,
       cameraPreset,
+      cameraResponse,
+      trackElevationRangeM: this.trackElevationRangeM || 0,
     };
 
-    gl.clearColor(0.052, 0.08, 0.061, 1);
+    gl.clearColor(0.16, 0.32, 0.38, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vertexArray);
@@ -729,10 +972,72 @@ class Renderer3D {
         physics.physics_render_y(index, alpha),
         physics.physics_render_z(index, alpha),
       ];
-      this.car(position, physics.physics_render_yaw(index, alpha), rgb(colors[index % colors.length]), index === 0);
+      const quaternion = {
+        w: physics.physics_render_orientation_w(index, alpha),
+        x: physics.physics_render_orientation_x(index, alpha),
+        y: physics.physics_render_orientation_y(index, alpha),
+        z: physics.physics_render_orientation_z(index, alpha),
+      };
+      this.car(position, frameFromQuaternion(quaternion), rgb(colors[index % colors.length]), index === 0, physics.physics_steering(index) * 0.54);
     }
+    const effectRates = SIMULATION_LAB ? effectEmissionRates() : this.updateEffects(elapsed, [x, y, z], playerFrame, telemetry, physics.physics_step_index());
     this.flushBatch(multiply(projection, view), this.eye);
     window.__MY_PHYSICS_FRAME__.drawCalls = this.drawCalls;
+    window.__MY_PHYSICS_FRAME__.activeParticles = this.effects.length;
+    window.__MY_PHYSICS_FRAME__.effectRates = effectRates;
+  }
+}
+
+function optionalTelemetry(name, ...args) {
+  const value = api?.[name]?.(...args);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function readPresentationTelemetry(physics = api) {
+  const scalarScrub = optionalTelemetry('physics_audio_tire_scrub', 0);
+  return {
+    speedMps: physics.physics_speed(0),
+    longitudinalAccelerationMps2: optionalTelemetry('physics_longitudinal_acceleration', 0),
+    lateralAccelerationMps2: physics.physics_lateral_acceleration(0),
+    yawRateRadS: physics.physics_yaw_rate(0),
+    waterDepthMm: physics.physics_road_water_depth_mm(0),
+    tireScrub: [0, 1, 2, 3].map((wheel) => optionalTelemetry('physics_audio_tire_scrub_wheel', 0, wheel) || scalarScrub),
+    hydroplaning: [0, 1, 2, 3].map((wheel) => optionalTelemetry('physics_hydroplaning', 0, wheel)),
+    brakeTemperatureK: [0, 1, 2, 3].map((wheel) => optionalTelemetry('physics_brake_temperature', 0, wheel) || 300),
+    suspensionActivity: [0, 1, 2, 3].map((wheel) => optionalTelemetry('physics_audio_suspension_activity', 0, wheel)),
+    roadNoise: [0, 1, 2, 3].map((wheel) => optionalTelemetry('physics_audio_road_noise', 0, wheel)),
+    impact: optionalTelemetry('physics_audio_impact', 0),
+    damage: physics.physics_damage(0),
+    engineLoad: physics.physics_audio_engine_load(0),
+    engineRpm: physics.physics_rpm(0),
+    redlineRpm: optionalTelemetry('physics_engine_redline', 0) || 7_000,
+    intake: optionalTelemetry('physics_audio_intake', 0),
+    exhaust: optionalTelemetry('physics_audio_exhaust', 0),
+    wind: optionalTelemetry('physics_audio_wind', 0),
+  };
+}
+
+function updateRaceUi() {
+  if (!raceView || SIMULATION_LAB) return;
+  const player = raceView.player;
+  raceUi.racePosition.textContent = player?.position ?? '—';
+  raceUi.raceField.textContent = `/ ${raceView.standings.length}`;
+  raceUi.raceLap.textContent = `${Math.min(raceView.totalLaps, (player?.completedLaps ?? 0) + 1)} / ${raceView.totalLaps}`;
+  raceUi.raceTime.textContent = formatRaceTime(raceView.raceTimeS);
+  raceUi.raceBestLap.textContent = formatRaceTime(player?.bestLapTimeS);
+  const showGreen = raceView.phase === RACE_PHASE.RACING && api.physics_time() < greenUntilPhysicsTime;
+  raceUi.raceCountdown.hidden = raceView.phase !== RACE_PHASE.COUNTDOWN && !showGreen;
+  raceUi.raceCountdownLabel.textContent = showGreen ? 'GO!' : raceView.countdownValue;
+  const countdownHint = raceUi.raceCountdown.querySelector('small');
+  countdownHint.textContent = showGreen ? 'RACE' : 'GET READY';
+  raceUi.raceResults.hidden = raceView.phase !== RACE_PHASE.FINISHED;
+  if (raceView.phase === RACE_PHASE.FINISHED) {
+    raceUi.raceResultSummary.textContent = `P${player.position} OF ${raceView.standings.length} · ${formatRaceTime(player.finishTimeS)}`;
+    raceUi.raceResultsList.innerHTML = raceView.standings.map((participant) => (
+      `<li data-player="${participant.index === 0}"><b>CAR ${String(participant.index + 1).padStart(2, '0')}</b><time>${
+        participant.finishTimeS === null ? `LAP ${Math.min(raceView.totalLaps, participant.completedLaps + 1)}` : formatRaceTime(participant.finishTimeS)
+      }</time></li>`
+    )).join('');
   }
 }
 
@@ -746,10 +1051,7 @@ function updateUi() {
     ui.trackLength.textContent = '1 ENGINEERING VEHICLE';
   } else {
     const progress = api.physics_track_progress(0);
-    if (previousProgress > 0.82 && progress < 0.18) completedLaps += 1;
-    if (previousProgress < 0.18 && progress > 0.82) completedLaps = Math.max(0, completedLaps - 1);
-    previousProgress = progress;
-    ui.lap.textContent = `${completedLaps + 1} · ${Math.round(progress * 100)}%`;
+    ui.lap.textContent = `${Math.min(raceView?.totalLaps ?? 3, (raceView?.player?.completedLaps ?? 0) + 1)} / ${raceView?.totalLaps ?? 3} · ${Math.round(progress * 100)}%`;
     ui.trackLength.textContent = `${(api.physics_track_length() / 1000).toFixed(2)} km`;
   }
   ui.lod.textContent = Math.round(api.physics_fidelity(0) * 100);
@@ -776,6 +1078,7 @@ function updateUi() {
     document.querySelector('#labAy').textContent = `${api.physics_lateral_acceleration(0).toFixed(2)} m/s²`;
     document.querySelector('#labWater').textContent = `${api.physics_road_water_depth_mm(0).toFixed(2)} mm`;
   }
+  updateRaceUi();
 }
 
 let renderer;
@@ -979,6 +1282,9 @@ function frame(now) {
   previous = now;
   accumulator += elapsed;
   const input = inputAdapter.read();
+  const gamepadStart = Boolean(input.pad?.buttons?.[9]?.pressed);
+  if (gamepadStart && !previousGamepadStart && raceView?.phase === RACE_PHASE.FINISHED) resetRace();
+  previousGamepadStart = gamepadStart;
   const escStatus = api.physics_player_esc() ? 'ESC ON' : 'ESC OFF';
   const profileName = inputConfig.driveProfile.toUpperCase();
   const targetG = api.physics_policy_lateral_accel_target() / 9.80665;
@@ -994,8 +1300,12 @@ function frame(now) {
   ui.inputDevice.textContent = api.physics_player_autopilot()
     ? `AI DRIVER · P · ${escStatus}`
     : `${input.device} · ${steeringMode}${keyboardToggleHint} · ${escStatus} · E`;
+  const controlsLocked = raceView?.phase === RACE_PHASE.FINISHED;
+  const commanded = controlsLocked
+    ? { steer: 0, throttle: 0, brake: 1, clutch: 0, handbrake: 0 }
+    : input;
   if (input.keyboardSteering) {
-    api.physics_set_keyboard_input(input.keyboardSteer, input.throttle, input.brake, input.clutch, input.handbrake, gear);
+    api.physics_set_keyboard_input(controlsLocked ? 0 : input.keyboardSteer, commanded.throttle, commanded.brake, commanded.clutch, commanded.handbrake, gear);
   } else {
     api.physics_set_device_input(
       input.deviceKind,
@@ -1004,11 +1314,11 @@ function frame(now) {
       input.raw.brake,
       input.raw.clutch,
       input.raw.handbrake,
-      input.steer,
-      input.throttle,
-      input.brake,
-      input.clutch,
-      input.handbrake,
+      commanded.steer,
+      commanded.throttle,
+      commanded.brake,
+      commanded.clutch,
+      commanded.handbrake,
       gear,
     );
   }
@@ -1017,6 +1327,7 @@ function frame(now) {
     api.physics_step(steps);
     accumulator -= steps * 0.001;
   }
+  updateRaceState();
   window.__MY_PHYSICS_INPUT__ = {
     worldStep: api.physics_step_index(),
     appliedStep: api.physics_input_applied_step(),
@@ -1049,6 +1360,9 @@ function frame(now) {
     },
   };
   renderer.scene(api, elapsed, Math.min(1, accumulator / 0.001));
+  const presentationTelemetry = readPresentationTelemetry();
+  audioEngine.update(presentationTelemetry);
+  document.documentElement.style.setProperty('--speed-streak', String(effectEmissionRates(presentationTelemetry).speedStreak));
   inputAdapter.rumble(input.pad, api.physics_ffb_vibration(0), now);
   updateUi();
   requestAnimationFrame(frame);
@@ -1063,16 +1377,24 @@ try {
   api.physics_select_demo_vehicle_preset(SIMULATION_LAB ? 3 : ARCADE_DEMO ? 2 : 1);
   document.querySelector('#saveSnapshot').addEventListener('click', () => {
     const bytes = api.physics_snapshot_save();
+    savedRaceState = raceDirector?.snapshot() ?? null;
     ui.snapshotStatus.textContent = `SAVED · ${(bytes / 1024).toFixed(0)} KiB`;
   });
   document.querySelector('#restoreSnapshot').addEventListener('click', () => {
-    ui.snapshotStatus.textContent = api.physics_snapshot_restore() ? 'RESTORED' : 'NO SNAPSHOT';
+    const restored = api.physics_snapshot_restore();
+    if (restored && raceDirector && savedRaceState) raceView = raceDirector.restore(savedRaceState);
+    ui.snapshotStatus.textContent = restored ? 'RESTORED' : 'NO SNAPSHOT';
   });
   ui.quality.addEventListener('change', () => {
     const level = ui.quality.value === 'auto' ? Number(ui.quality.dataset.automatic || 2) : Number(ui.quality.value);
     api.physics_set_quality(level);
   });
   ui.cameraPreset.addEventListener('change', () => selectCameraPreset(ui.cameraPreset.value));
+  raceUi.raceRestart?.addEventListener('click', () => {
+    enableAudio();
+    resetRace();
+  });
+  document.querySelector('#audioToggle').addEventListener('click', toggleAudio);
   ui.driveProfile.addEventListener('change', () => setDriveProfile(ui.driveProfile.value));
   ui.keyboardPolicy.addEventListener('change', () => setKeyboardAdaptive(ui.keyboardPolicy.value === 'adaptive'));
   ui.inputResponse.addEventListener('change', () => {
@@ -1105,6 +1427,7 @@ try {
   ui.calibrationStatus.textContent = inputConfig.calibratedDevice ? `SAVED · ${inputConfig.calibratedDevice}` : 'DEFAULT RANGE';
   benchmarkPhysics();
   setDriveProfile(inputConfig.driveProfile, false);
+  if (raceDirector) resetRace();
   if (SIMULATION_LAB) installSimulationLab();
   if (new URLSearchParams(location.search).get('autopilot') === '1') api.physics_set_player_autopilot(1);
   status.textContent = SIMULATION_LAB

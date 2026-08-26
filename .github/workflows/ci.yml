@@ -17,9 +17,10 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
       - run: cargo run --release --bin maneuver-validation -- --summary
-      - run: node --test tests/web_visual_config.mjs tests/web_input_config.mjs
+      - run: node --test tests/web_visual_config.mjs tests/web_input_config.mjs tests/web_race_state.mjs tests/web_presentation_config.mjs tests/web_audio_engine.mjs
       - run: cargo build --release --target wasm32-unknown-unknown --lib
       - run: cp target/wasm32-unknown-unknown/release/my_physics.wasm web/physics.wasm
       - run: node scripts/test-wasm-controller-snapshot.mjs
+      - run: node scripts/test-wasm-race.mjs
       - run: node scripts/test-wasm-simulation-lab.mjs
       - run: node scripts/benchmark-wasm.mjs
