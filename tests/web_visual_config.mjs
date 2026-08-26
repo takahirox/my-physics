@@ -4,6 +4,7 @@ import {
   CAMERA_PRESETS,
   VISUAL_CUES,
   cameraSettings,
+  cameraTelemetryResponse,
   cueFrequencyHz,
   metricIntervals,
   metricSamples,
@@ -59,9 +60,36 @@ test('camera presets remain close, finite and deliberately distinct', () => {
   assert.ok(CAMERA_PRESETS.chase.backM >= 5.5 && CAMERA_PRESETS.chase.backM <= 7.0);
   assert.ok(CAMERA_PRESETS.chase.heightM >= 1.8 && CAMERA_PRESETS.chase.heightM <= 2.5);
   assert.ok(CAMERA_PRESETS.hood.backM < 0);
+  assert.ok(CAMERA_PRESETS.cockpit.backM < 0);
   for (const preset of Object.keys(CAMERA_PRESETS)) {
     const settings = cameraSettings(preset, 100 / 3.6);
     assert.ok(Number.isFinite(settings.fieldOfViewDegrees));
     assert.ok(settings.fieldOfViewDegrees >= 55 && settings.fieldOfViewDegrees <= 80);
   }
+});
+
+test('camera telemetry response is finite, bounded and inactive at rest', () => {
+  assert.deepEqual(cameraTelemetryResponse(), {
+    pitchDeg: 0,
+    rollDeg: 0,
+    lateralOffsetM: 0,
+    longitudinalOffsetM: 0,
+    shakeEnvelopeM: 0,
+    edgeStreak: 0,
+  });
+  const extreme = cameraTelemetryResponse({
+    speedMps: Infinity,
+    longitudinalAccelerationMps2: 1e6,
+    lateralAccelerationMps2: -1e6,
+    yawRateRadS: 1e6,
+    suspensionActivity: [1, 2, NaN, -1],
+    impact: 9,
+  });
+  assert.ok(Object.values(extreme).every(Number.isFinite));
+  assert.ok(Math.abs(extreme.pitchDeg) <= 2.8);
+  assert.ok(Math.abs(extreme.rollDeg) <= 3.5);
+  assert.ok(Math.abs(extreme.lateralOffsetM) <= 0.22);
+  assert.ok(Math.abs(extreme.longitudinalOffsetM) <= 0.14);
+  assert.ok(extreme.shakeEnvelopeM <= 0.075);
+  assert.ok(extreme.edgeStreak >= 0 && extreme.edgeStreak <= 1);
 });
