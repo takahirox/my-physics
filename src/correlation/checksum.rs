@@ -42,7 +42,7 @@ pub fn sha256_hex(input: &[u8]) -> String {
     }
     padded.extend_from_slice(&bit_length.to_be_bytes());
     let mut hash = INITIAL;
-    for block in padded.chunks_exact(64) {
+    for block in padded.as_chunks::<64>().0 {
         let mut words = [0_u32; 64];
         for (index, word) in words[..16].iter_mut().enumerate() {
             *word = u32::from_be_bytes(block[index * 4..index * 4 + 4].try_into().unwrap());
