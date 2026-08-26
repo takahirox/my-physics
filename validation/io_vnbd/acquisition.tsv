@@ -1,0 +1,13 @@
+# schema_version=1
+# source_repository=https://github.com/onyekpeu/IO-VNBD.git
+# source_commit=118939602e3422d47b8ab0807b623751c3ac135b
+# sha256 is the Git LFS object id and is verified against the materialized file.
+run_id	split	purpose	synchronization	pressure_code	bytes	sha256	source_path	scenario
+V-Vw1	calibration	sensor-bias	synchronized	C	4001856	125a3ab348bca6b5d9fb2d52b7ba1f27d4a31f03b7b60b16ef778f7935bb4380	Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw01/V-Vw1.csv	stationary recording; sensor-bias characterization
+V-Vw12	calibration	parameter-identification	synchronized	D	188273	f474667235581e514d44f371cc81039aacc6c0604669f552f127bdb8c60e370b	Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw12/V-Vw12.csv	approximately straight and steady-speed road segment
+V-Vfb02c	calibration	parameter-identification	vehicle-only	D	132991	c68f61a381555a0c5669b9952b59d7424f1bef82fd05b1cb8fbc26bb549b12aa	Unsynchronised V and S Dataset/Categorised IOVNB (V) Dataset/V Dataset/Vf (Driver E)/V-Vfb02c/V-Vfb02c.csv	U-turn and hard braking; low-gear steering/brake excitation
+V-Vw7	validation	model-selection	synchronized	D	346895	3ba9d21d1532b4e15dc41ed9e4baa996e1ccf7b447f2fc41ee44564a5dd1f5ef	Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw07/V-Vw7.csv	successive turns
+V-Vw16b	validation	model-selection	synchronized	D	239979	1e81b217eaf6c2340aafbbc122ad738d876013366737437155a4e722eb6fd8ed	Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw16b/V-Vw16b.csv	hard braking on approximately straight A-road at night
+V-Vta1b	holdout	final-evaluation	synchronized	A	205277	35b4e74bd1597d9f82895c3451dbe71a2d4084a3718cbdf8ea7fbb04f206db94	Synchronised V abd S datasets/Categorised IOVNB Dataset/Vta (Driver E)/Vta01b/V-Vta1b.csv	wet/muddy hard-braking segment; steering channel is zero throughout
+V-vtb12	holdout	final-evaluation	synchronized	A	94747	dad39fa7ff152dc13ab8e7d903047bcfdb7882c8fe03b7c0f8f12eef07cbc115	Synchronised V abd S datasets/Categorised IOVNB Dataset/Vtb (Driver E)/Vtb12/V-vtb12.csv	wet night roundabout
+V-Vw17	smoke	ci-only	synchronized	D	71065	62ab9ddd16621eb70afaeec7237ae7b31499ae5df9e9d57324fc07fe648a48ee	Synchronised V abd S datasets/Categorised IOVNB Dataset/Vw (Driver E)/Vw17/V-Vw17.csv	short hard-braking straight-line run; never used for fitting or final claims

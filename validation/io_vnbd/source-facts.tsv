@@ -1,0 +1,24 @@
+# This is a source/provenance ledger, not a complete vehicle definition.
+# status is one of measured, published, observed, inferred, fitted, assumed, unresolved.
+entity	parameter	value	unit	status	source	note
+dataset	name	IO-VNBD	-	published	Onyekpe et al. 2021 DOI 10.1016/j.dib.2021.106885	Inertial and Odometry Vehicle Navigation Benchmark Dataset
+dataset	vehicle-data duration	about 40	hour	published	Onyekpe et al. 2021	Approximate aggregate over the V datasets
+dataset	vehicle-data distance	about 1300	km	published	Onyekpe et al. 2021	Approximate aggregate over the V datasets
+logger	device	Racelogic VBOX Video HD2	-	published	Onyekpe et al. 2021	CAN-bus and GPS logger used for V data
+logger	nominal sample rate	10	Hz	published	Onyekpe et al. 2021	Selected files also contain a constant 0.1 s sample-period channel
+vehicle	make	Ford	-	published	Onyekpe et al. 2021	Research vehicle for the V datasets
+vehicle	model/trim	Fiesta Titanium	-	published	Onyekpe et al. 2021	Exact model year and generation are not stated
+vehicle	driven axle	front	-	published	Onyekpe et al. 2021	Front-wheel-drive research vehicle
+vehicle	model year	unknown	-	unresolved	IO-VNBD primary sources inspected	Do not select a year silently
+vehicle	engine variant	unknown	-	unresolved	IO-VNBD primary sources inspected	Engine RPM is measured, but displacement/torque curve are not identified
+vehicle	transmission ratios	unknown	-	unresolved	IO-VNBD primary sources inspected	May be fitted from calibration data and must then be labelled fitted
+vehicle	curb/test mass	unknown	kg	unresolved	IO-VNBD primary sources inspected	Driver, payload, fuel load and weighing condition are not supplied
+vehicle	CG position	unknown	m	unresolved	IO-VNBD primary sources inspected	Must not be represented as measured
+vehicle	inertia tensor	unknown	kg*m^2	unresolved	IO-VNBD primary sources inspected	Must not be represented as measured
+vehicle	wheelbase	unknown	m	unresolved	IO-VNBD primary sources inspected	A generation-specific manufacturer value requires an explicit generation assumption
+vehicle	track widths	unknown	m	unresolved	IO-VNBD primary sources inspected	A generation-specific manufacturer value requires an explicit generation assumption
+vehicle	tire make/model/size	unknown	-	unresolved	IO-VNBD primary sources inspected	Pressure condition alone does not identify tire construction
+vehicle	steering ratio	unknown	-	unresolved	IO-VNBD primary sources inspected	CAN steering-angle semantics and ratio require validation
+test	road grade/profile	unknown	-	unresolved	IO-VNBD primary sources inspected	GPS height exists but its documented km unit and noise must be validated before grade reconstruction
+test	wind	unknown	m/s	unresolved	IO-VNBD primary sources inspected	Treat uncertainty explicitly
+test	vehicle loading	unknown	kg	unresolved	IO-VNBD primary sources inspected	Treat uncertainty explicitly
